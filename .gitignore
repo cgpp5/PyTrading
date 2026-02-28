@@ -1,0 +1,38 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+
+# --- Entornos Virtuales ---
+# (Es muy probable que crees uno pronto como .venv o venv)
+.venv/
+venv/
+env/
+ENV/
+
+# --- Pruebas y Cobertura ---
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+htmlcov/
+nosetests.xml
+coverage.xml
+
+# --- Configuración de Trading y Secretos ---
+# ¡IMPORTANTE! No subas tus API Keys. 
+# Si usas python-dotenv para Alpaca/Tiingo:
+.env
+.env.local
+.env.shared
+
+# --- Distribución / Empaquetado ---
+dist/
+build/
+*.egg-info/
+
+# --- IDEs ---
+.vscode/
+.idea/
+.DS_Store

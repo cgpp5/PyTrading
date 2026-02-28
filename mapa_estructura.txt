@@ -1,0 +1,30 @@
+📦 PyTrading/
+├── .pytest_cache
+│   ├── v
+│   │   └── cache
+│   │       ├── lastfailed
+│   │       └── nodeids
+│   ├── .gitignore
+│   ├── CACHEDIR.TAG
+│   └── README.md
+├── marketfeed
+│   ├── providers
+│   │   ├── __init__.py
+│   │   ├── alpaca.py
+│   │   ├── base.py
+│   │   ├── tiingo.py
+│   │   └── yfinance.py
+│   ├── __init__.py
+│   ├── calendar.py
+│   ├── errors.py
+│   ├── marketfeed.py
+│   ├── normalize.py
+│   ├── observability.py
+│   ├── timeframes.py
+│   └── types.py
+├── tests
+│   ├── test_marketfeed_phase0.py
+│   ├── test_marketfeed_phase1_normalize.py
+│   └── test_marketfeed_phase2_yfinance.py
+├── .gitignore
+└── pyproject.toml
