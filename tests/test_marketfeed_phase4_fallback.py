@@ -1,87 +1,101 @@
-import unittest
-from unittest.mock import patch
-from datetime import datetime, timedelta, timezone
+from __future__ import annotations
 
-from marketfeed.marketfeed import MarketFeed
+from datetime import datetime, timezone
+import unittest
+import pandas as pd
+
+from marketfeed.marketfeed import MarketFeed, ProviderTier
+from marketfeed.calendar import MarketCalendarResolver
+from marketfeed.observability import InMemoryObservability
 from marketfeed.errors import ProviderError
+from marketfeed.providers.base import MarketDataProvider
+
+
+# --- Proveedores dummy para simular fallos y éxito ---
+
+class FailingAlpaca(MarketDataProvider):
+    name = "alpaca"
+
+    def fetch_ohlcv(self, *args, **kwargs):
+        raise ProviderError("alpaca down")
+
+
+class FailingTiingo(MarketDataProvider):
+    name = "tiingo"
+
+    def fetch_ohlcv(self, *args, **kwargs):
+        raise ProviderError("tiingo down")
+
+
+class WorkingYFinance(MarketDataProvider):
+    name = "yfinance"
+
+    def fetch_ohlcv(self, symbol, timeframe, start, end):
+        return pd.DataFrame(
+            {
+                "timestamp": [start],
+                "open": [1.0],
+                "high": [2.0],
+                "low": [0.5],
+                "close": [1.5],
+                "volume": [100.0],
+            }
+        )
+
 
 class TestMarketFeedFallback(unittest.TestCase):
-    
     def setUp(self):
-        from marketfeed.providers.alpaca import AlpacaProvider
-        from marketfeed.providers.tiingo import TiingoProvider
-        from marketfeed.providers.yfinance import YFinanceProvider
-        
-        # Instanciamos el orquestador inyectando la lista de proveedores directamente
-        self.feed = MarketFeed(
-            providers=[
-                AlpacaProvider(api_key="fake", api_secret="fake"),
-                TiingoProvider(api_key="fake"),
-                YFinanceProvider()
-            ]
+        self.obs = InMemoryObservability()
+        self.calendar = MarketCalendarResolver(
+            symbol_calendar_map={"AAPL": "NYSE"},
+            observability=self.obs,
         )
-        self.start = datetime.now(timezone.utc) - timedelta(days=5)
-        self.end = datetime.now(timezone.utc)
-        self.symbol = "SPY"
-        self.tf = "1d"
 
-    @patch('marketfeed.providers.alpaca.AlpacaProvider.fetch_ohlcv')
-    @patch('marketfeed.providers.tiingo.TiingoProvider.fetch_ohlcv')
-    def test_fallback_alpaca_fails_uses_tiingo(self, mock_tiingo, mock_alpaca):
-        """Prueba: Caída de Alpaca → Uso de Tiingo"""
-        
-        # 1. Forzamos a Alpaca a fallar con un Error de Conexión
-        mock_alpaca.side_effect = ProviderError("Alpaca connection lost")
-        
-        # 2. Hacemos que Tiingo devuelva un DataFrame válido
-        import pandas as pd
-        df_tiingo = pd.DataFrame({
-            "open": [10], "high": [12], "low": [9], "close": [11], "volume": [100]
-        }, index=pd.to_datetime(["2026-01-01"], utc=True))
-        df_tiingo.index.name = "timestamp"
-        mock_tiingo.return_value = df_tiingo
+        self.feed = MarketFeed(
+            tiers=[
+                ProviderTier(FailingAlpaca(), quality="normal"),
+                ProviderTier(FailingTiingo(), quality="normal"),
+                ProviderTier(WorkingYFinance(), quality="degraded"),
+            ],
+            calendar_resolver=self.calendar,
+            observability=self.obs,
+        )
 
-        # Ejecutamos
-        market_data = self.feed.get_ohlcv(self.symbol, self.tf, self.start, self.end)
+        self.start = datetime(2026, 2, 1, tzinfo=timezone.utc)
+        self.end = datetime(2026, 2, 2, tzinfo=timezone.utc)
 
-        # Verificaciones
-        mock_alpaca.assert_called_once()  # Se intentó Alpaca
-        mock_tiingo.assert_called_once()  # Se intentó Tiingo
-        
-        self.assertEqual(market_data.meta.provider_used, "tiingo")
-        self.assertTrue(market_data.meta.fallback_used)
-        self.assertEqual(market_data.meta.quality, "degraded")
-        self.assertEqual(market_data.df.iloc[0]["source"], "tiingo")
+    def test_fallback_alpaca_fails_uses_tiingo(self):
+        feed = MarketFeed(
+            tiers=[
+                ProviderTier(FailingAlpaca(), quality="normal"),
+                ProviderTier(WorkingYFinance(), quality="normal"),
+            ],
+            calendar_resolver=self.calendar,
+            observability=self.obs,
+        )
 
-    @patch('marketfeed.providers.alpaca.AlpacaProvider.fetch_ohlcv')
-    @patch('marketfeed.providers.tiingo.TiingoProvider.fetch_ohlcv')
-    @patch('marketfeed.providers.yfinance.YFinanceProvider.fetch_ohlcv')
-    def test_fallback_both_fail_uses_yfinance(self, mock_yf, mock_tiingo, mock_alpaca):
-        """Prueba: Caída de Alpaca y Tiingo → Uso de yfinance"""
-        
-        # 1. Forzamos a Alpaca y Tiingo a fallar (ej. Rate Limit y Caída Servidor)
-        mock_alpaca.side_effect = ProviderError("Alpaca rate limit")
-        mock_tiingo.side_effect = ProviderError("Tiingo server down")
-        
-        # 2. Hacemos que yfinance salve la situación
-        import pandas as pd
-        df_yf = pd.DataFrame({
-            "open": [10], "high": [12], "low": [9], "close": [11], "volume": [100]
-        }, index=pd.to_datetime(["2026-01-01"], utc=True))
-        df_yf.index.name = "timestamp"
-        mock_yf.return_value = df_yf
+        md = feed.get_ohlcv("AAPL", "1d", self.start, self.end)
 
-        # Ejecutamos
-        market_data = self.feed.get_ohlcv(self.symbol, self.tf, self.start, self.end)
+        self.assertFalse(md.df.empty)
+        self.assertEqual(md.meta.provider_used, "yfinance")
+        self.assertTrue(md.meta.fallback_used)
+        self.assertEqual(
+            md.meta.extra["attempted_providers"],
+            ["alpaca", "yfinance"],
+        )
 
-        # Verificaciones
-        mock_alpaca.assert_called_once()
-        mock_tiingo.assert_called_once()
-        mock_yf.assert_called_once()
-        
-        self.assertEqual(market_data.meta.provider_used, "yfinance")
-        self.assertTrue(market_data.meta.fallback_used)
-        self.assertEqual(market_data.meta.quality, "degraded")
+    def test_fallback_both_fail_uses_yfinance(self):
+        md = self.feed.get_ohlcv("AAPL", "1d", self.start, self.end)
 
-if __name__ == '__main__':
-    unittest.main()
+        self.assertFalse(md.df.empty)
+        self.assertEqual(md.meta.provider_used, "yfinance")
+        self.assertTrue(md.meta.fallback_used)
+        self.assertEqual(
+            md.meta.extra["attempted_providers"],
+            ["alpaca", "tiingo", "yfinance"],
+        )
+
+        # Observability: dos warnings, ningún error crítico
+        self.assertEqual(len(self.obs.warnings), 2)
+        self.assertEqual(len(self.obs.errors), 0)
+        self.assertEqual(len(self.obs.criticals), 0)

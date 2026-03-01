@@ -27,7 +27,7 @@ class AlpacaProvider(MarketDataProvider):
         self._tf_map = {
             "15m": "15Min",
             "1h": "1Hour",
-            "4h": "4Hour",
+            "4h": None,
             "1d": "1Day"
         }
 
@@ -36,10 +36,9 @@ class AlpacaProvider(MarketDataProvider):
         Obtiene datos históricos de barras para un símbolo.
         """
         # Validación temprana del timeframe
-        if timeframe not in self._tf_map:
+        alpaca_tf = self._tf_map.get(timeframe)
+        if alpaca_tf is None:
             raise ProviderError(f"[{self.name}] Timeframe no soportado: {timeframe}")
-        
-        alpaca_tf = self._tf_map[timeframe]
 
         # Configuración de los headers para la autenticación
         headers = {
@@ -102,11 +101,5 @@ class AlpacaProvider(MarketDataProvider):
         # Quedarnos estrictamente con las columnas requeridas para no arrastrar basura (ej. 'vw', 'n')
         required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
         df = df[required_cols]
-
-        # Forzar el tipo datetime para el timestamp y asegurar UTC
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-
-        # Establecer 'timestamp' como índice para facilitar futuras alineaciones de huecos (Fase 5)
-        df.set_index("timestamp", inplace=True)
 
         return df

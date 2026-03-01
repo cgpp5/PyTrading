@@ -56,7 +56,7 @@ def test_missing_calendar_is_fatal():
         symbol_map={},  # no mapping
     )
     with pytest.raises(ConfigurationError):
-        feed.get_ohlcv("SPX", "1h", datetime.now(timezone.utc), datetime.now(timezone.utc))
+        feed.get_ohlcv("AAPL", "1h", datetime.now(timezone.utc), datetime.now(timezone.utc))
 
     assert len(obs.criticals) == 1
     assert obs.criticals[0][0] == "calendar_not_configured"
@@ -68,13 +68,13 @@ def test_fallback_on_provider_error():
             ProviderTier(provider=AlwaysFailProvider(), quality="normal"),
             ProviderTier(provider=GoodProvider(), quality="degraded"),
         ],
-        symbol_map={"SPX": "NYSE"},
+        symbol_map={"AAPL": "NYSE"},
     )
 
     start = datetime(2026, 2, 1, tzinfo=timezone.utc)
     end = datetime(2026, 2, 2, tzinfo=timezone.utc)
 
-    md = feed.get_ohlcv("SPX", "1h", start, end, allow_fallback=True)
+    md = feed.get_ohlcv("AAPL", "1h", start, end, allow_fallback=True)
 
     assert md.meta.provider_used == "good"
     assert md.meta.fallback_used is True
@@ -89,13 +89,13 @@ def test_no_fallback_when_disabled():
             ProviderTier(provider=AlwaysFailProvider(), quality="normal"),
             ProviderTier(provider=GoodProvider(), quality="degraded"),
         ],
-        symbol_map={"SPX": "NYSE"},
+        symbol_map={"AAPL": "NYSE"},
     )
 
     start = datetime(2026, 2, 1, tzinfo=timezone.utc)
     end = datetime(2026, 2, 2, tzinfo=timezone.utc)
 
-    md = feed.get_ohlcv("SPX", "1h", start, end, allow_fallback=False)
+    md = feed.get_ohlcv("AAPL", "1h", start, end, allow_fallback=False)
 
     assert md.meta.provider_used == "none"
     assert md.df.empty
@@ -109,14 +109,14 @@ def test_internal_error_is_not_silenced():
             ProviderTier(provider=BuggyProvider(), quality="normal"),
             ProviderTier(provider=GoodProvider(), quality="degraded"),
         ],
-        symbol_map={"SPX": "NYSE"},
+        symbol_map={"AAPL": "NYSE"},
     )
 
     start = datetime(2026, 2, 1, tzinfo=timezone.utc)
     end = datetime(2026, 2, 2, tzinfo=timezone.utc)
 
     with pytest.raises(ValueError):
-        feed.get_ohlcv("SPX", "1h", start, end, allow_fallback=True)
+        feed.get_ohlcv("AAPL", "1h", start, end, allow_fallback=True)
 
     # No warning of provider_failure because it wasn't ProviderError
     assert len(obs.warnings) == 0
