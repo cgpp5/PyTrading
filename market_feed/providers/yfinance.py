@@ -47,6 +47,12 @@ class YFinanceProvider(MarketDataProvider):
         if df is None or df.empty:
             raise ProviderError("No data returned from yfinance")
 
+        # yfinance >=0.2.31 puede devolver columnas MultiIndex
+        # (e.g. ("Open", "AAPL")) al descargar un solo ticker.
+        # Aplanar a nivel único antes de renombrar.
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
         # yfinance devuelve columnas con mayúsculas
         df = df.rename(
             columns={
