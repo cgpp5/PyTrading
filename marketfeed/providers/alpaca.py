@@ -15,7 +15,10 @@ class AlpacaProvider(MarketDataProvider):
     Proveedor Tier 1: Alpaca (Paper Trading / Free Tier).
     Utiliza el feed 'iex' para proporcionar datos gratuitos con latencia muy baja.
     """
-    name = "alpaca"
+
+    @property
+    def name(self) -> str:
+        return "alpaca"
 
     def __init__(self, api_key: str, api_secret: str):
         # El endpoint para la API de datos de mercado (Data API v2)

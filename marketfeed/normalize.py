@@ -10,7 +10,11 @@ CANONICAL_COLS = REQUIRED_PRICE_COLS + CONTROL_COLS
 
 def empty_ohlcv_dataframe() -> pd.DataFrame:
     df = pd.DataFrame(columns=CANONICAL_COLS)
-    df.index.name = "timestamp"
+    df.index = pd.DatetimeIndex([], dtype="datetime64[ns, UTC]", name="timestamp")
+    for col in REQUIRED_PRICE_COLS:
+        df[col] = df[col].astype("float64")
+    df["latency_sec"] = df["latency_sec"].astype("float64")
+    df["is_gap"] = df["is_gap"].astype("bool")
     return df
 
 

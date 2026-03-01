@@ -70,5 +70,5 @@ from marketfeed.observability import InMemoryObservability
 @pytest.fixture
 def nyse_calendar_resolver():
     obs = InMemoryObservability()
-    symbol_map = {"AAPL": "NYSE"}
-    return MarketCalendarResolver(symbol_map=symbol_map, observability=obs)
+    symbol_calendar_map = {"AAPL": "NYSE"}
+    return MarketCalendarResolver(symbol_calendar_map=symbol_calendar_map, observability=obs)

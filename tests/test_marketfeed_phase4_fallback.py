@@ -14,21 +14,30 @@ from marketfeed.providers.base import MarketDataProvider
 # --- Proveedores dummy para simular fallos y éxito ---
 
 class FailingAlpaca(MarketDataProvider):
-    name = "alpaca"
+
+    @property
+    def name(self) -> str:
+        return "alpaca"
 
     def fetch_ohlcv(self, *args, **kwargs):
         raise ProviderError("alpaca down")
 
 
 class FailingTiingo(MarketDataProvider):
-    name = "tiingo"
+
+    @property
+    def name(self) -> str:
+        return "tiingo"
 
     def fetch_ohlcv(self, *args, **kwargs):
         raise ProviderError("tiingo down")
 
 
 class WorkingYFinance(MarketDataProvider):
-    name = "yfinance"
+
+    @property
+    def name(self) -> str:
+        return "yfinance"
 
     def fetch_ohlcv(self, symbol, timeframe, start, end):
         return pd.DataFrame(

@@ -11,13 +11,15 @@ from marketfeed.errors import ProviderError
 _TIMEFRAME_MAP = {
     "15m": "15m",
     "1h": "60m",
-    "4h": "60m",  # yfinance no soporta 4h nativo; se degrada
     "1d": "1d",
 }
 
 
 class YFinanceProvider(MarketDataProvider):
-    name = "yfinance"
+
+    @property
+    def name(self) -> str:
+        return "yfinance"
 
     def fetch_ohlcv(
         self,
@@ -56,6 +58,11 @@ class YFinanceProvider(MarketDataProvider):
             }
         )
 
-        df = df.reset_index().rename(columns={"Date": "timestamp"})
+        # yfinance usa "Date" para daily y "Datetime" para intradía
+        df = df.reset_index()
+        if "Datetime" in df.columns:
+            df = df.rename(columns={"Datetime": "timestamp"})
+        elif "Date" in df.columns:
+            df = df.rename(columns={"Date": "timestamp"})
 
         return df

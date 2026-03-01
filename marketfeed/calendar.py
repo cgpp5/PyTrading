@@ -24,22 +24,13 @@ class SessionInfo:
 class MarketCalendarResolver:
     def __init__(
         self,
-        symbol_map: dict[str, str] | None = None,
+        symbol_calendar_map: dict[str, str],
         observability=None,
-        *,
-        symbol_calendar_map: dict[str, str] | None = None,
     ):
-        self._symbol_calendar_map = (
-            symbol_calendar_map
-            if symbol_calendar_map is not None
-            else symbol_map
-        )
+        if symbol_calendar_map is None:
+            raise ValueError("symbol_calendar_map must be provided")
 
-        if self._symbol_calendar_map is None:
-            raise ValueError(
-                "symbol_map or symbol_calendar_map must be provided"
-            )
-
+        self._symbol_calendar_map = symbol_calendar_map
         self._observability = observability
         self._calendar_cache: dict[str, mcal.MarketCalendar] = {}
         self._standard_duration_cache: dict[str, float] = {}

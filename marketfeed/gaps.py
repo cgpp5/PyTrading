@@ -1,26 +1,30 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
+
+import numpy as np
 import pandas as pd
 
 
-def detect_intraday_gaps(
+def fill_session_gaps(
     df: pd.DataFrame,
-    session_open: pd.Timestamp,
-    session_close: pd.Timestamp,
+    session_open: datetime,
+    session_close: datetime,
     timeframe: str,
-) -> pd.DataFrame:
+    provider_name: str,
+) -> tuple[pd.DataFrame, int]:
     """
-    Marca is_gap=True si faltan velas dentro de una sesión oficial.
+    Inserta filas NaN para timestamps esperados que falten dentro de una sesión.
 
-    Requisitos:
-    - df indexado por timestamp UTC
-    - df ya normalizado
-    - session_open / session_close oficiales del calendario
+    Per DataFrame.md:
+      - timestamp correcto
+      - OHLCV = NaN
+      - is_gap = True
+      - quality = "degraded"
+      - source = provider_name
+
+    Devuelve (df_con_gaps_insertados, número_de_filas_insertadas).
     """
-
-    if df.empty:
-        return df
 
     tf_map = {
         "15m": timedelta(minutes=15),
@@ -28,7 +32,9 @@ def detect_intraday_gaps(
     }
 
     if timeframe not in tf_map:
-        raise ValueError(f"Unsupported timeframe for gap detection: {timeframe}")
+        raise ValueError(
+            f"Unsupported timeframe for gap detection: {timeframe}"
+        )
 
     step = tf_map[timeframe]
 
@@ -39,12 +45,29 @@ def detect_intraday_gaps(
         tz="UTC",
     )
 
-    actual_index = df.index.intersection(expected_index)
+    missing = expected_index.difference(df.index)
 
-    is_gap = len(actual_index) < len(expected_index)
+    if len(missing) == 0:
+        return df, 0
 
-    if is_gap:
-        df = df.copy()
-        df["is_gap"] = True
+    gap_rows = pd.DataFrame(
+        {
+            "open": np.nan,
+            "high": np.nan,
+            "low": np.nan,
+            "close": np.nan,
+            "volume": np.nan,
+            "source": provider_name,
+            "quality": "degraded",
+            "is_gap": True,
+            "latency_sec": np.nan,
+        },
+        index=missing,
+    )
+    gap_rows.index.name = "timestamp"
 
-    return df
+    result = pd.concat([df, gap_rows]).sort_index()
+    # Si hay duplicados accidentales, conservar el dato real
+    result = result[~result.index.duplicated(keep="first")]
+
+    return result, len(missing)

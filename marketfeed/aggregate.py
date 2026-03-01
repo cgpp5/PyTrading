@@ -1,41 +1,29 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Sequence
+
+import numpy as np
 import pandas as pd
 
 
 def aggregate_4h_aligned(
     df_1h: pd.DataFrame,
-    session_start_hour: int,
-    session_start_minute: int,
-    session_end_hour: int,
-    session_end_minute: int,
+    sessions: Sequence[tuple[datetime, datetime]],
 ) -> pd.DataFrame:
     """
     Agrega velas 1h a 4h alineadas a la sesión de mercado.
 
-    Requisitos:
-    - df_1h indexado por timestamp UTC
-    - columnas canónicas OHLCV + control
+    Parámetros:
+    - df_1h: DataFrame indexado por timestamp UTC con columnas canónicas.
+    - sessions: lista de (market_open, market_close) por día de sesión,
+      obtenida directamente del calendario de mercado.
     """
 
     if df_1h.empty:
         return df_1h.copy()
 
     df = df_1h.copy().sort_index()
-
-    # Construimos los límites de sesión por día
-    sessions = []
-    for day in df.index.normalize().unique():
-        start = day + timedelta(
-            hours=session_start_hour,
-            minutes=session_start_minute,
-        )
-        end = day + timedelta(
-            hours=session_end_hour,
-            minutes=session_end_minute,
-        )
-        sessions.append((start, end))
 
     aggregated_rows = []
 
@@ -57,25 +45,56 @@ def aggregate_4h_aligned(
                 window_start = window_end
                 continue
 
-            expected_bars = int((window_end - window_start) / timedelta(hours=1))
-            is_gap = len(window_df) < expected_bars
-
-            aggregated_rows.append(
-                {
-                    "timestamp": window_start,
-                    "open": window_df.iloc[0]["open"],
-                    "high": window_df["high"].max(),
-                    "low": window_df["low"].min(),
-                    "close": window_df.iloc[-1]["close"],
-                    "volume": window_df["volume"].sum(),
-                    "source": window_df.iloc[0]["source"],
-                    "quality": (
-                        "degraded" if is_gap else window_df.iloc[0]["quality"]
-                    ),
-                    "is_gap": is_gap,
-                    "latency_sec": window_df["latency_sec"].max(),
-                }
+            # Cap al cierre real de sesión para la última ventana
+            effective_end = min(window_end, session_end)
+            expected_bars = int(
+                (effective_end - window_start) / timedelta(hours=1)
             )
+
+            # Gap si alguna barra constituyente es gap o faltan barras
+            has_gap = (
+                bool(window_df["is_gap"].any())
+                or len(window_df) < expected_bars
+            )
+
+            # Usar solo barras reales (no-gap) para OHLCV
+            real_df = window_df[~window_df["is_gap"]]
+
+            if real_df.empty:
+                # Toda la ventana son gaps → vela 4h completamente NaN
+                aggregated_rows.append(
+                    {
+                        "timestamp": window_start,
+                        "open": np.nan,
+                        "high": np.nan,
+                        "low": np.nan,
+                        "close": np.nan,
+                        "volume": np.nan,
+                        "source": window_df.iloc[0]["source"],
+                        "quality": "degraded",
+                        "is_gap": True,
+                        "latency_sec": np.nan,
+                    }
+                )
+            else:
+                aggregated_rows.append(
+                    {
+                        "timestamp": window_start,
+                        "open": real_df.iloc[0]["open"],
+                        "high": real_df["high"].max(),
+                        "low": real_df["low"].min(),
+                        "close": real_df.iloc[-1]["close"],
+                        "volume": real_df["volume"].sum(),
+                        "source": real_df.iloc[0]["source"],
+                        "quality": (
+                            "degraded"
+                            if has_gap
+                            else real_df.iloc[0]["quality"]
+                        ),
+                        "is_gap": has_gap,
+                        "latency_sec": real_df["latency_sec"].max(),
+                    }
+                )
 
             window_start = window_end
 

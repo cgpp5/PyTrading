@@ -13,14 +13,20 @@ from marketfeed.providers.base import MarketDataProvider
 
 
 class AlwaysFailProvider(MarketDataProvider):
-    name = "fail"
+
+    @property
+    def name(self) -> str:
+        return "fail"
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
         raise ProviderError("provider down")
 
 
 class GoodProvider(MarketDataProvider):
-    name = "good"
+
+    @property
+    def name(self) -> str:
+        return "good"
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
         return pd.DataFrame(
@@ -36,16 +42,19 @@ class GoodProvider(MarketDataProvider):
 
 
 class BuggyProvider(MarketDataProvider):
-    name = "buggy"
+
+    @property
+    def name(self) -> str:
+        return "buggy"
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> pd.DataFrame:
         # Missing required columns -> normalize_ohlcv will raise ValueError (internal)
         return pd.DataFrame({"timestamp": [start], "open": [1.0]})
 
 
-def _mk_feed(tiers, symbol_map):
+def _mk_feed(tiers, symbol_calendar_map):
     obs = InMemoryObservability()
-    cal = MarketCalendarResolver(symbol_map, obs)
+    cal = MarketCalendarResolver(symbol_calendar_map, obs)
     feed = MarketFeed(tiers=tiers, calendar_resolver=cal, observability=obs)
     return feed, obs
 
@@ -53,7 +62,7 @@ def _mk_feed(tiers, symbol_map):
 def test_missing_calendar_is_fatal():
     feed, obs = _mk_feed(
         tiers=[ProviderTier(provider=GoodProvider(), quality="normal")],
-        symbol_map={},  # no mapping
+        symbol_calendar_map={},  # no mapping
     )
     with pytest.raises(ConfigurationError):
         feed.get_ohlcv("AAPL", "1h", datetime.now(timezone.utc), datetime.now(timezone.utc))
@@ -68,7 +77,7 @@ def test_fallback_on_provider_error():
             ProviderTier(provider=AlwaysFailProvider(), quality="normal"),
             ProviderTier(provider=GoodProvider(), quality="degraded"),
         ],
-        symbol_map={"AAPL": "NYSE"},
+        symbol_calendar_map={"AAPL": "NYSE"},
     )
 
     start = datetime(2026, 2, 1, tzinfo=timezone.utc)
@@ -89,7 +98,7 @@ def test_no_fallback_when_disabled():
             ProviderTier(provider=AlwaysFailProvider(), quality="normal"),
             ProviderTier(provider=GoodProvider(), quality="degraded"),
         ],
-        symbol_map={"AAPL": "NYSE"},
+        symbol_calendar_map={"AAPL": "NYSE"},
     )
 
     start = datetime(2026, 2, 1, tzinfo=timezone.utc)
@@ -109,7 +118,7 @@ def test_internal_error_is_not_silenced():
             ProviderTier(provider=BuggyProvider(), quality="normal"),
             ProviderTier(provider=GoodProvider(), quality="degraded"),
         ],
-        symbol_map={"AAPL": "NYSE"},
+        symbol_calendar_map={"AAPL": "NYSE"},
     )
 
     start = datetime(2026, 2, 1, tzinfo=timezone.utc)

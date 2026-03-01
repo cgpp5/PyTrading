@@ -17,7 +17,10 @@ class TiingoProvider(MarketDataProvider):
     Usa el endpoint IEX para intradía (15m, 1h) y el endpoint Daily (EOD) para 1d.
     No soporta 4h nativamente para evitar resampleos inconsistentes de IEX.
     """
-    name = "tiingo"
+
+    @property
+    def name(self) -> str:
+        return "tiingo"
 
     def __init__(self, api_key: str):
         self.api_key = api_key

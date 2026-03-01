@@ -29,13 +29,14 @@ def test_aggregate_4h_aligned_nyse_session():
         index=idx,
     )
 
-    out = aggregate_4h_aligned(
-        df,
-        session_start_hour=9,
-        session_start_minute=30,
-        session_end_hour=16,
-        session_end_minute=0,
-    )
+    sessions = [
+        (
+            datetime(2026, 2, 2, 9, 30, tzinfo=timezone.utc),
+            datetime(2026, 2, 2, 16, 0, tzinfo=timezone.utc),
+        ),
+    ]
+
+    out = aggregate_4h_aligned(df, sessions=sessions)
 
     assert len(out) == 2
 
@@ -46,4 +47,6 @@ def test_aggregate_4h_aligned_nyse_session():
     assert not bool(first["is_gap"])
 
     second = out.iloc[1]
-    assert bool(second["is_gap"])
+    # 13:30–16:00 = 2.5h → solo 2 barras completas de 1h esperadas (13:30, 14:30)
+    # Las 2 barras están presentes, así que NO es gap
+    assert not bool(second["is_gap"])
