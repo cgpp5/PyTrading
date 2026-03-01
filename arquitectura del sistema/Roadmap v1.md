@@ -1,4 +1,4 @@
-Roadmap
+Roadmap v1
 
 sábado, 28 de febrero de 2026
 
@@ -128,3 +128,11 @@ Todo lo que hoy haces con Print, CSVs, eventos visuales.
 * Configuración de estrategias.
 
 Nunca ejecuta lógica de trading.
+
+**🗄️ Módulo Transversal: DataStore (Capa de Persistencia)**
+
+**Responsabilidad:** Actuar como la única fuente de la verdad en disco que separa el motor de cálculo de la visualización, permitiendo al sistema retener el estado entre ciclos de ejecución (evitando la "amnesia" de la memoria RAM).
+
+* **Almacenamiento de series temporales:** Guarda el histórico validado de OHLCV y el valor numérico de las *features* calculadas.
+* **Memoria del sistema:** Almacena los multiplicadores, contadores de *cooldown* y *flags* activos.
+* **Registro de eventos:** Consolida el log estructurado de las intenciones de señal y las confirmaciones de ejecución.
