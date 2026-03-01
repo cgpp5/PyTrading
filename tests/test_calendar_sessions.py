@@ -34,7 +34,7 @@ def test_nyse_early_close_is_special_session(nyse_calendar_resolver):
 
 def test_special_session_does_not_imply_gap():
     from datetime import datetime, timezone
-    from marketfeed.calendar import SessionInfo
+    from market_feed.calendar import SessionInfo
 
     session = SessionInfo(
         market_open=datetime(2026, 11, 27, 14, 30, tzinfo=timezone.utc),
@@ -50,7 +50,7 @@ def test_special_session_does_not_imply_gap():
 
 def test_expected_bars_is_integer():
     from datetime import datetime, timezone
-    from marketfeed.calendar import SessionInfo
+    from market_feed.calendar import SessionInfo
 
     session = SessionInfo(
         market_open=datetime(2026, 3, 2, 14, 30, tzinfo=timezone.utc),
@@ -64,8 +64,8 @@ def test_expected_bars_is_integer():
 
 
 import pytest
-from marketfeed.calendar import MarketCalendarResolver
-from marketfeed.observability import InMemoryObservability
+from market_feed.calendar import MarketCalendarResolver
+from market_feed.observability import InMemoryObservability
 
 @pytest.fixture
 def nyse_calendar_resolver():

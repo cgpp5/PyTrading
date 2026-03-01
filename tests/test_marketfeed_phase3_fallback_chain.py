@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from marketfeed.marketfeed import MarketFeed, ProviderTier
-from marketfeed.calendar import MarketCalendarResolver
-from marketfeed.observability import InMemoryObservability
-from marketfeed.errors import ProviderError
-from marketfeed.providers.base import MarketDataProvider
+from market_feed.market_feed import MarketFeed, ProviderTier
+from market_feed.calendar import MarketCalendarResolver
+from market_feed.observability import InMemoryObservability
+from market_feed.errors import ProviderError
+from market_feed.providers.base import MarketDataProvider
 
 
 # --- Proveedores dummy para simular la cadena real ---

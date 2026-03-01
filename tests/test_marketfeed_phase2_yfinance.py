@@ -4,11 +4,11 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
-from marketfeed.marketfeed import MarketFeed, ProviderTier
-from marketfeed.providers.yfinance import YFinanceProvider
-from marketfeed.calendar import MarketCalendarResolver
-from marketfeed.observability import InMemoryObservability
-from marketfeed.errors import ProviderError
+from market_feed.market_feed import MarketFeed, ProviderTier
+from market_feed.providers.yfinance import YFinanceProvider
+from market_feed.calendar import MarketCalendarResolver
+from market_feed.observability import InMemoryObservability
+from market_feed.errors import ProviderError
 
 
 class DummyYF:
@@ -27,7 +27,7 @@ class DummyYF:
 
 
 def test_yfinance_provider_success(monkeypatch):
-    import marketfeed.providers.yfinance as yfmod
+    import market_feed.providers.yfinance as yfmod
 
     monkeypatch.setattr(yfmod, "yf", DummyYF)
 
@@ -52,7 +52,7 @@ def test_yfinance_provider_success(monkeypatch):
 
 
 def test_yfinance_no_data_raises_provider_error(monkeypatch):
-    import marketfeed.providers.yfinance as yfmod
+    import market_feed.providers.yfinance as yfmod
 
     class EmptyYF:
         @staticmethod

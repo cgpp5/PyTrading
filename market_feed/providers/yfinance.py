@@ -5,7 +5,7 @@ import pandas as pd
 import yfinance as yf
 
 from .base import MarketDataProvider
-from marketfeed.errors import ProviderError
+from ..errors import ProviderError
 
 
 _TIMEFRAME_MAP = {

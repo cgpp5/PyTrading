@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import pandas as pd
 
-from marketfeed.aggregate import aggregate_4h_aligned
+from market_feed.aggregate import aggregate_4h_aligned
 
 
 def test_aggregate_4h_aligned_nyse_session():

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import numpy as np
 import pandas as pd
 
-from marketfeed.gaps import fill_session_gaps
+from market_feed.gaps import fill_session_gaps
 
 
 def test_inserts_nan_row_for_missing_bar():

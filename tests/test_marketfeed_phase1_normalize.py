@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from marketfeed.normalize import normalize_ohlcv, CANONICAL_COLS
+from market_feed.normalize import normalize_ohlcv, CANONICAL_COLS
 
 
 def test_normalize_sets_utc_index_from_timestamp_column():

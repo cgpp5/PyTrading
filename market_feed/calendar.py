@@ -4,7 +4,7 @@ from typing import List
 
 import pandas_market_calendars as mcal
 
-from marketfeed.errors import ConfigurationError
+from .errors import ConfigurationError
 
 
 # ---------------------------------------------------------------------

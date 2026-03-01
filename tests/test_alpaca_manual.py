@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 # Importamos el proveedor y la clase de error de tu estructura
-from marketfeed.providers.alpaca import AlpacaProvider
-from marketfeed.errors import ProviderError
+from market_feed.providers.alpaca import AlpacaProvider
+from market_feed.errors import ProviderError
 
 # Configuramos el logging en nivel DEBUG para ver exactamente la URL que se llama
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
