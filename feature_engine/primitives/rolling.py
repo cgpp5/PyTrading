@@ -87,3 +87,36 @@ class RollingStd(PrimitiveFeature):
     def compute(self, df: pd.DataFrame) -> pd.Series:
         self._validate_columns(df, {self._column})
         return df[self._column].rolling(self._window).std(ddof=1)
+
+
+class ExponentialMovingAverage(PrimitiveFeature):
+    """Exponential moving average over a source column."""
+
+    def __init__(
+        self,
+        period: int,
+        column: str = "close",
+        timeframe: Timeframe = "1d",
+    ) -> None:
+        if period < 1:
+            raise ValueError("period must be >= 1")
+        self._period = period
+        self._column = column
+        self._spec = FeatureSpec(
+            name=f"ema_{period}_{column}",
+            version="1.0",
+            category=FeatureCategory.TECHNICAL,
+            timeframe=timeframe,
+            alignment=AlignmentPolicy.NONE,
+            availability=AvailabilityRule.AT_CLOSE,
+            lookback_required=period,
+            warmup_policy=WarmupPolicy.FIXED_LOOKBACK,
+        )
+
+    @property
+    def spec(self) -> FeatureSpec:
+        return self._spec
+
+    def compute(self, df: pd.DataFrame) -> pd.Series:
+        self._validate_columns(df, {self._column})
+        return df[self._column].ewm(span=self._period, adjust=False, min_periods=self._period).mean()

@@ -18,6 +18,10 @@ class MissingDependency(FeatureEngineError):
     """Raised when a required dependency (feature or external source) is unavailable."""
 
 
+class CircularDependency(FeatureEngineError):
+    """Raised when the feature dependency graph contains a cycle."""
+
+
 class InvalidAlignment(FeatureEngineError):
     """Raised when a temporal alignment operation is invalid."""
 

@@ -133,3 +133,48 @@ Nada fuera de featurespec/ puede:
 * reinterpretar una feature.
 
 El motor, el DAG y las implementaciones **solo consumen este contrato**.
+
+**Estado actual implementado**
+
+Ademas del contrato semantico, hoy ya existen tres capas funcionando en el codigo:
+
+* **primitives/** con indicadores atomicos sobre OHLCV,
+* **alignment/** con reglas explicitas de proyeccion temporal,
+* **composition/** con un primer slice de Fase 4.
+
+Implementado actualmente:
+
+* returns / log returns,
+* rolling mean / rolling std,
+* RSI,
+* true range,
+* volume z-score,
+* series externas diarias desde CSV,
+* Bollinger Bands como feature compuesta.
+
+**Series externas ya integradas**
+
+FeatureEngine ya soporta features externas respaldadas por CSV, hoy usadas para:
+
+* `mcclellan_oscillator`
+* `mcclellan_summation`
+
+Caracteristicas operativas de estas series:
+
+* se leen desde `external_features/` por defecto,
+* usan `FeatureCategory.EXTERNAL_SERIES`,
+* declaran `availability = NEXT_SESSION`,
+* usan interpolacion lineal cuando se alinean a timeframes menores,
+* degradan calidad al alinearse.
+
+**Composicion ya abierta**
+
+La carpeta `feature_engine/composition/` ya existe y hoy contiene:
+
+* `base.py` con `DerivedFeature`,
+* `bollinger.py` con:
+  + `BollingerMiddleBand`,
+  + `BollingerUpperBand`,
+  + `BollingerLowerBand`.
+
+La implementacion actual todavia no es un DAG general de composicion. Es una primera capa para separar features complejas de las primitivas y obligar a declarar dependencias de forma explicita.

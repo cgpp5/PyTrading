@@ -23,15 +23,15 @@ Proporcionar validación visual del pipeline completo: datos OHLCV de market_fee
 
 ## Decisiones arquitecturales
 
-| # | Decisión | Opción elegida | Alternativas descartadas |
-|---|----------|---------------|------------------------|
-| D1 | Servidor | FastAPI (ASGI) | Flask, http.server stdlib, HTML offline |
-| D2 | Flujo de datos | API REST intermedia | Directo DataStore, directo MarketFeed |
-| D3 | Layout | Candlestick + Volumen + Indicador | Solo candlestick, candles+volumen |
-| D4 | Alcance v1 | Selector en la UI (dropdowns) | Hardcoded, CLI params |
-| D5 | Indicador | Rolling Mean (overlay sobre candlestick) | Rolling Std, Simple Returns, selector dinámico |
-| D6 | Origen features | Leer de DataStore | Calcular on-the-fly, fallback mixto |
-| D7 | Estructura proyecto | Separar `trading_ui/` y `frontend/` | Todo en `trading_ui/` |
+| # | Decisión | Opción elegida |
+|---|----------|---------------|
+| D1 | Servidor | FastAPI (ASGI) |
+| D2 | Flujo de datos | API REST intermedia |
+| D3 | Layout | Candlestick + Volumen + Indicador |
+| D4 | Alcance v1 | Selector en la UI (dropdowns) |
+| D5 | Indicador | Indicadores agrupados por contrato de UI |
+| D6 | Origen features | Leer de DataStore |
+| D7 | Estructura proyecto | Separar `trading_ui/` y `frontend/`
 
 ---
 
@@ -171,7 +171,62 @@ Lista los features disponibles en data_store para esa combinación symbol+timefr
 }
 ```
 
-**Implementación:** Lee una muestra de filas, inspecciona el JSON de features, y devuelve las claves únicas encontradas.
+**Implementación:** hoy se apoya en `load_market_data()` y devuelve todas las columnas no base reconstruidas desde el JSON.
+
+### `GET /api/available-indicators?symbol=AAPL&timeframe=1d`
+
+Lista indicadores renderizables para esa combinación symbol+timeframe.
+
+Esta capa existe por encima de `available-features`. Su objetivo es agrupar varias series escalares bajo una única entidad visual.
+
+**Response:**
+```json
+{
+  "indicators": [
+    {
+      "key": "bollinger_bands_20_2@1.0",
+      "name": "Bollinger Bands (20, 2)",
+      "kind": "bollinger_bands",
+      "overlay": true,
+      "series": [
+        {"key": "bollinger_middle_20@1.0", "label": "Middle", "color": "#f9e2af", "lineWidth": 2},
+        {"key": "bollinger_upper_20_2@1.0", "label": "Upper", "color": "#f38ba8", "lineWidth": 2},
+        {"key": "bollinger_lower_20_2@1.0", "label": "Lower", "color": "#89b4fa", "lineWidth": 2}
+      ]
+    },
+    {
+      "key": "sma_50@1.0",
+      "name": "sma_50@1.0",
+      "kind": "scalar",
+      "overlay": true,
+      "series": [
+        {"key": "sma_50@1.0", "label": "sma_50@1.0", "color": "#fab387", "lineWidth": 2}
+      ]
+    }
+  ]
+}
+```
+
+### `GET /api/indicator?symbol=AAPL&timeframe=1d&indicator=bollinger_bands_20_2@1.0`
+
+Carga un indicador ya agrupado y listo para renderizar.
+
+**Response:**
+```json
+{
+  "symbol": "AAPL",
+  "timeframe": "1d",
+  "indicator": "bollinger_bands_20_2@1.0",
+  "name": "Bollinger Bands (20, 2)",
+  "kind": "bollinger_bands",
+  "overlay": true,
+  "series": [
+    {"key": "bollinger_middle_20@1.0", "label": "Middle", "color": "#f9e2af", "lineWidth": 2, "data": [...]},
+    {"key": "bollinger_upper_20_2@1.0", "label": "Upper", "color": "#f38ba8", "lineWidth": 2, "data": [...]},
+    {"key": "bollinger_lower_20_2@1.0", "label": "Lower", "color": "#89b4fa", "lineWidth": 2, "data": [...]} 
+  ]
+}
+```
 
 ---
 
@@ -181,11 +236,11 @@ Lista los features disponibles en data_store para esa combinación symbol+timefr
 
 ```
 ┌─────────────────────────────────────────────┐
-│  [Symbol ▼] [Timeframe ▼] [Feature ▼] [Go] │  ← Barra de controles
+│  [Symbol ▼] [Timeframe ▼] [Indicator ▼] [Go] │  ← Barra de controles
 ├─────────────────────────────────────────────┤
 │                                             │
 │           Candlestick + Overlay             │  ← Panel principal (LWC)
-│         (Rolling Mean como línea)           │
+│   (SMA o Bollinger Bands agrupado)          │
 │                                             │
 ├─────────────────────────────────────────────┤
 │           Volume Histogram                  │  ← Panel secundario (LWC pane)
@@ -204,12 +259,13 @@ Lista los features disponibles en data_store para esa combinación symbol+timefr
      → chart.addSeries(CandlestickSeries) → series.setData(candles)
      → volumePane.addSeries(HistogramSeries) → volumeSeries.setData(volume)
 
-   fetch("/api/available-features?symbol=X&timeframe=Y")
-     → poblar dropdown de features
+   fetch("/api/available-indicators?symbol=X&timeframe=Y")
+     → poblar dropdown de indicadores
 
-3. Al seleccionar un feature:
-   fetch("/api/features?symbol=X&timeframe=Y&feature=Z")
-     → chart.addSeries(LineSeries) → featureSeries.setData(data)
+3. Al seleccionar un indicador:
+   fetch("/api/indicator?symbol=X&timeframe=Y&indicator=Z")
+     → por cada serie del indicador:
+       chart.addSeries(LineSeries) → setData(data)
 ```
 
 ### Lightweight Charts: Setup
@@ -237,11 +293,7 @@ const volumeSeries = volumePane.addSeries(HistogramSeries, {
     priceFormat: { type: 'volume' },
 });
 
-// Overlay: Feature como línea sobre el candlestick
-const featureSeries = chart.addSeries(LineSeries, {
-    color: '#fab387',
-    lineWidth: 2,
-});
+// Overlay: indicador compuesto por una o más LineSeries
 ```
 
 ---
@@ -254,6 +306,32 @@ trading_ui asume que data_store ya contiene datos. Se proporciona un script `see
 1. Llama a `MarketFeed.get_ohlcv()` para descargar OHLCV.
 2. Calcula features con feature_engine (ej: `RollingMean(window=50)`).
 3. Persiste ambos en data_store vía `save_market_data()` + `save_features()`.
+
+Hoy el seed de validación también inyecta:
+
+* `BollingerMiddleBand(period=20)`
+* `BollingerUpperBand(period=20)`
+* `BollingerLowerBand(period=20)`
+* `McClellanOscillator()`
+* `McClellanSummation()`
+
+## Regla de agrupación actual
+
+Los indicadores multi-serie agrupados hoy son Bollinger Bands y MACD.
+
+Regla aplicada por el backend:
+
+* detectar `bollinger_middle_<period>@<version>`
+* detectar `bollinger_upper_<period>_<deviation>@<version>`
+* detectar `bollinger_lower_<period>_<deviation>@<version>`
+* si comparten `period`, `deviation` y `version`, exponerlos como un único indicador visual
+
+Regla aplicada para MACD:
+
+* detectar `macd_line_<fast>_<slow>_<signal>_<apply_to>@<version>`
+* detectar `macd_signal_<fast>_<slow>_<signal>_<apply_to>@<version>`
+* detectar `macd_histogram_<fast>_<slow>_<signal>_<apply_to>@<version>`
+* si comparten `fast`, `slow`, `signal`, `apply_to` y `version`, exponerlos como un único indicador visual en pane separado
 
 ### Timestamps UTC
 

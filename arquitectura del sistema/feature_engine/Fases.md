@@ -98,6 +98,27 @@ Construir features complejas a partir de otras features.
 
 Un DAG de features reproducible y auditable.
 
+**Estado actual**
+
+La implementacion real ya abrio esta fase, pero todavia de forma parcial.
+
+Actualmente existe:
+
+* carpeta `feature_engine/composition/`
+* base `DerivedFeature`
+* primer slice de composicion con Bollinger Bands
+* validadores de dependencias a nivel de grafo
+* DAG general de ejecucion con orden topologico determinista
+* registry formal para registrar calculadores por `FeatureSpec.name`
+
+Actualmente no existe todavia:
+
+* un catalogo amplio de features compuestas,
+* un planificador temporal mas sofisticado que valide compatibilidad mas alla de timeframe,
+* un registry declarativo por familia/parametrizacion que evite registrar instancias concretas manualmente.
+
+La decision tomada fue avanzar primero con un orquestador pequeño pero formal, suficiente para validar dependencias y ejecutar composiciones registradas sin introducir todavia un sistema completo de planificacion temporal.
+
 **Fase 5 — Calidad y validez de features**
 
 **Objetivo**

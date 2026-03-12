@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -24,6 +25,7 @@ import pandas as pd
 _PRICE_COLS = ["open", "high", "low", "close", "volume"]
 _CONTROL_COLS = ["source", "quality", "is_gap", "latency_sec"]
 _CANONICAL_COLS = _PRICE_COLS + _CONTROL_COLS
+_FEATURE_KEY_RE = re.compile(r"^[A-Za-z0-9_]+(?:@[A-Za-z0-9._-]+)?$")
 
 # Structural validation — no imports from feature_engine.
 _VALID_QUALITIES = {"ready", "warmup", "degraded", "missing"}
@@ -302,7 +304,7 @@ def validate_features_dict(features: dict[str, Any]) -> None:
     """Validate the structural contract of a features dictionary.
 
     Rules:
-        1. Each key must contain ``@`` (format ``name@version``).
+        1. Each key must be non-empty and may optionally include ``@version``.
         2. Each value must be a dict with exactly ``value`` and ``quality``.
         3. ``value`` must be ``float``, ``int``, or ``None``.
         4. ``quality`` must be in ``_VALID_QUALITIES``.
@@ -311,10 +313,10 @@ def validate_features_dict(features: dict[str, Any]) -> None:
         ValueError: If any entry violates the contract.
     """
     for key, entry in features.items():
-        if "@" not in key:
+        if not isinstance(key, str) or not _FEATURE_KEY_RE.fullmatch(key):
             raise ValueError(
-                f"Feature key {key!r} must contain '@' "
-                f"(expected format: name@version)"
+                f"Feature key {key!r} must be a non-empty identifier "
+                f"optionally followed by '@version'"
             )
         if not isinstance(entry, dict):
             raise ValueError(

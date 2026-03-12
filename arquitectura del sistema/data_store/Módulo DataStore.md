@@ -108,7 +108,7 @@ data_store valida **estructura**, no **semántica**. No importa nada de feature_
 
 Antes de escribir, cada entrada del JSON debe cumplir:
 
-1. La clave contiene `@` (formato `nombre@versión`, e.g. `returns@1.0`).
+1. La clave es un identificador simple o `nombre@versión` (e.g. `returns@1.0`, `mcclellan_oscillator`).
 2. El valor es un dict con exactamente las claves `value` y `quality`.
 3. `value` es `float`, `int` o `null`.
 4. `quality` ∈ `{"ready", "warmup", "degraded", "missing"}`.
@@ -201,10 +201,12 @@ data_store/
 - Una sola escritura por vela (OHLCV + todas las features juntas).
 - No requiere JOINs para reconstruir el DataFrame completo.
 - Añadir features no modifica el esquema.
+- Mantiene simple el caso dominante: una clave, una serie numérica.
 
 **Coste conocido:**
 
 - Actualizar **una sola feature** requiere read-modify-write del JSON completo.
 - Aceptable porque el patrón predominante es batch: FeatureEngine calcula todas las features de una barra de golpe.
+- Indicadores visuales multi-linea no viven como una entidad única en persistencia; deben agruparse en la capa consumidora.
 
 **Escape hatch:** Si feature updates individuales se convierten en cuello de botella → migrar a tabla `feature_values(symbol, timeframe, timestamp, feature_key, value, quality)` con UPSERTs atómicos. El contrato de serialización (keys del JSON) se mapea directamente a la columna `feature_key`.

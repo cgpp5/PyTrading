@@ -49,6 +49,13 @@ def store():
         ts_iso = dates[i].isoformat()
         save_features(conn, "TEST", "1d", ts_iso, {
             "sma_50@1.0": {"value": 100.0 + i, "quality": "ready"},
+            "atr_14@1.0": {"value": 1.5 + i, "quality": "ready"},
+            "bollinger_middle_20@1.0": {"value": 101.0 + i, "quality": "ready"},
+            "bollinger_upper_20_2@1.0": {"value": 103.0 + i, "quality": "ready"},
+            "bollinger_lower_20_2@1.0": {"value": 99.0 + i, "quality": "ready"},
+            "macd_line_12_26_9_close@1.0": {"value": 0.5 + i, "quality": "ready"},
+            "macd_signal_12_26_9_close@1.0": {"value": 0.25 + i, "quality": "ready"},
+            "macd_histogram_12_26_9_close@1.0": {"value": 0.25, "quality": "ready"},
         })
 
     conn.close()
@@ -124,7 +131,109 @@ def test_get_available_features(client):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["features"] == ["sma_50@1.0"]
+    assert data["features"] == [
+        "atr_14@1.0",
+        "bollinger_lower_20_2@1.0",
+        "bollinger_middle_20@1.0",
+        "bollinger_upper_20_2@1.0",
+        "macd_histogram_12_26_9_close@1.0",
+        "macd_line_12_26_9_close@1.0",
+        "macd_signal_12_26_9_close@1.0",
+        "sma_50@1.0",
+    ]
+
+
+def test_get_available_indicators_groups_bollinger(client):
+    resp = client.get(
+        "/api/available-indicators",
+        params={"symbol": "TEST", "timeframe": "1d"},
+    )
+    assert resp.status_code == 200
+
+    indicators = resp.json()["indicators"]
+    assert [indicator["key"] for indicator in indicators] == [
+        "atr_14@1.0",
+        "bollinger_bands_20_2@1.0",
+        "macd_12_26_9_close@1.0",
+        "sma_50@1.0",
+    ]
+    assert indicators[0]["pane"] == "separate"
+    assert indicators[0]["kind"] == "atr"
+    assert indicators[0]["name"] == "ATR (14)"
+    assert indicators[1]["name"] == "Bollinger Bands (20, 2)"
+    assert [series["label"] for series in indicators[1]["series"]] == [
+        "Middle",
+        "Upper",
+        "Lower",
+    ]
+    assert indicators[2]["pane"] == "separate"
+    assert [series["seriesType"] for series in indicators[2]["series"]] == [
+        "line",
+        "line",
+        "histogram",
+    ]
+
+
+def test_get_available_features_includes_simple_keys(store):
+    conn = store.get_connection()
+    try:
+        ts_iso = pd.date_range("2026-01-05", periods=1, freq="B", tz="UTC")[0].isoformat()
+        save_features(conn, "TEST", "1d", ts_iso, {
+            "mcclellan_oscillator": {"value": 12.3, "quality": "ready"},
+        })
+    finally:
+        conn.close()
+
+    set_store(store)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/available-features",
+            params={"symbol": "TEST", "timeframe": "1d"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["features"] == [
+        "atr_14@1.0",
+        "bollinger_lower_20_2@1.0",
+        "bollinger_middle_20@1.0",
+        "bollinger_upper_20_2@1.0",
+        "macd_histogram_12_26_9_close@1.0",
+        "macd_line_12_26_9_close@1.0",
+        "macd_signal_12_26_9_close@1.0",
+        "mcclellan_oscillator",
+        "sma_50@1.0",
+    ]
+
+    set_store(None)
+
+
+def test_get_available_indicators_includes_simple_scalar_keys(store):
+    conn = store.get_connection()
+    try:
+        ts_iso = pd.date_range("2026-01-05", periods=1, freq="B", tz="UTC")[0].isoformat()
+        save_features(conn, "TEST", "1d", ts_iso, {
+            "mcclellan_oscillator": {"value": 12.3, "quality": "ready"},
+        })
+    finally:
+        conn.close()
+
+    set_store(store)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/available-indicators",
+            params={"symbol": "TEST", "timeframe": "1d"},
+        )
+
+    assert resp.status_code == 200
+    assert [indicator["key"] for indicator in resp.json()["indicators"]] == [
+        "atr_14@1.0",
+        "bollinger_bands_20_2@1.0",
+        "macd_12_26_9_close@1.0",
+        "mcclellan_oscillator",
+        "sma_50@1.0",
+    ]
+
+    set_store(None)
 
 
 def test_get_available_features_no_data(client):
@@ -155,6 +264,82 @@ def test_get_features(client):
     for entry in data["data"]:
         assert isinstance(entry["time"], int)
         assert isinstance(entry["value"], float)
+
+
+def test_get_indicator_returns_grouped_bollinger_series(client):
+    resp = client.get(
+        "/api/indicator",
+        params={"symbol": "TEST", "timeframe": "1d", "indicator": "bollinger_bands_20_2@1.0"},
+    )
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["indicator"] == "bollinger_bands_20_2@1.0"
+    assert data["name"] == "Bollinger Bands (20, 2)"
+    assert data["kind"] == "bollinger_bands"
+    assert len(data["series"]) == 3
+    assert [series["label"] for series in data["series"]] == [
+        "Middle",
+        "Upper",
+        "Lower",
+    ]
+    assert all(len(series["data"]) == 3 for series in data["series"])
+
+
+def test_get_indicator_returns_atr_scalar_in_separate_pane(client):
+    resp = client.get(
+        "/api/indicator",
+        params={"symbol": "TEST", "timeframe": "1d", "indicator": "atr_14@1.0"},
+    )
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["indicator"] == "atr_14@1.0"
+    assert data["name"] == "ATR (14)"
+    assert data["kind"] == "atr"
+    assert data["pane"] == "separate"
+    assert len(data["series"]) == 1
+    assert data["series"][0]["seriesType"] == "line"
+    assert len(data["series"][0]["data"]) == 3
+
+
+def test_get_indicator_returns_grouped_macd_series(client):
+    resp = client.get(
+        "/api/indicator",
+        params={"symbol": "TEST", "timeframe": "1d", "indicator": "macd_12_26_9_close@1.0"},
+    )
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["indicator"] == "macd_12_26_9_close@1.0"
+    assert data["name"] == "MACD (12, 26, 9)"
+    assert data["kind"] == "macd"
+    assert data["pane"] == "separate"
+    assert len(data["series"]) == 3
+    assert [series["label"] for series in data["series"]] == [
+        "MACD",
+        "Signal",
+        "Histogram",
+    ]
+    assert [series["seriesType"] for series in data["series"]] == [
+        "line",
+        "line",
+        "histogram",
+    ]
+    assert all(len(series["data"]) == 3 for series in data["series"])
+
+
+def test_get_indicator_returns_scalar_indicator(client):
+    resp = client.get(
+        "/api/indicator",
+        params={"symbol": "TEST", "timeframe": "1d", "indicator": "sma_50@1.0"},
+    )
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["kind"] == "scalar"
+    assert len(data["series"]) == 1
+    assert data["series"][0]["key"] == "sma_50@1.0"
 
 
 def test_get_features_nonexistent(client):

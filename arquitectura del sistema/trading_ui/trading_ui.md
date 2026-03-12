@@ -137,6 +137,28 @@
 4. Cambiar a `(ninguno)` → la línea desaparece.
 5. Cambiar de símbolo → el dropdown de features se actualiza automáticamente.
 
+**Estado actual implementado**
+
+El paso se extendió más allá de un overlay escalar simple.
+
+Hoy existe una distinción explícita entre:
+
+- endpoints de bajo nivel por feature (`/api/available-features`, `/api/features`)
+- endpoints de presentación por indicador (`/api/available-indicators`, `/api/indicator`)
+
+Esto permite mantener persistencia scalar-per-feature y, al mismo tiempo, representar en la UI indicadores multi-linea como una sola entidad seleccionable.
+
+Caso ya implementado:
+
+- Bollinger Bands se selecciona como un solo indicador en la UI.
+- Internamente renderiza tres `LineSeries`: middle, upper y lower.
+
+Tambien implementado:
+
+- MACD se selecciona como un solo indicador en la UI.
+- Internamente renderiza dos `LineSeries` y un `HistogramSeries`.
+- Se dibuja en un pane separado del precio.
+
 ---
 
 ## Resumen de archivos a crear

@@ -21,6 +21,16 @@ from market_feed.calendar import MarketCalendarResolver
 from market_feed.market_feed import MarketFeed, ProviderTier
 from market_feed.observability import InMemoryObservability
 from market_feed.providers.yfinance import YFinanceProvider
+from feature_engine.composition.atr import AverageTrueRange
+from feature_engine.composition.bollinger import (
+    BollingerBandWidth,
+    BollingerLowerBand,
+    BollingerMiddleBand,
+    BollingerUpperBand,
+)
+from feature_engine.composition.macd import MACDHistogram, MACDLine, MACDSignal
+from feature_engine.errors import ComputationError
+from feature_engine.primitives.external import McClellanOscillator, McClellanSummation
 from feature_engine.primitives.rolling import RollingMean
 
 
@@ -28,6 +38,14 @@ DB_PATH = "trading_data.sqlite"
 DEFAULT_SYMBOLS = ["AAPL", "SPY"]
 DEFAULT_DAYS = 365
 TIMEFRAME = "1d"
+
+
+def _feature_storage_key(feature) -> str:
+    storage_key = getattr(feature, "storage_key", None)
+    if isinstance(storage_key, str):
+        return storage_key
+    spec = feature.spec
+    return f"{spec.name}@{spec.version}"
 
 
 def _build_market_feed() -> MarketFeed:
@@ -79,29 +97,48 @@ def _seed_symbol(
     save_request_meta(conn, symbol, TIMEFRAME, meta_dict)
 
     # --- 4. Calcular y persistir features ---
-    sma = RollingMean(window=50, timeframe=TIMEFRAME)
-    series = sma.compute(md.df)
-    spec = sma.spec
-    feature_key = f"{spec.name}@{spec.version}"  # "sma_50@1.0"
+    calculators = [
+        RollingMean(window=50, timeframe=TIMEFRAME),
+        BollingerMiddleBand(period=20, timeframe=TIMEFRAME),
+        BollingerUpperBand(period=20, timeframe=TIMEFRAME),
+        BollingerLowerBand(period=20, timeframe=TIMEFRAME),
+        BollingerBandWidth(period=20, timeframe=TIMEFRAME),
+        AverageTrueRange(period=14, timeframe=TIMEFRAME),
+        MACDLine(timeframe=TIMEFRAME),
+        MACDSignal(timeframe=TIMEFRAME),
+        MACDHistogram(timeframe=TIMEFRAME),
+        McClellanOscillator(timeframe=TIMEFRAME),
+        McClellanSummation(timeframe=TIMEFRAME),
+    ]
+
+    features_by_ts: dict[str, dict[str, dict[str, float | None | str]]] = {}
+    imported_keys: list[str] = []
+
+    for feature in calculators:
+        try:
+            series = feature.compute(md.df)
+        except ComputationError as exc:
+            print(f"  [{symbol}] Omitida {feature.spec.name}: {exc}")
+            continue
+
+        feature_key = _feature_storage_key(feature)
+        imported_keys.append(feature_key)
+
+        for ts, value in series.items():
+            if value is None or (hasattr(value, "__class__") and value != value):
+                quality = "warmup" if "@" in feature_key else "missing"
+                entry = {"value": None, "quality": quality}
+            else:
+                entry = {"value": float(value), "quality": "ready"}
+
+            features_by_ts.setdefault(ts.isoformat(), {})[feature_key] = entry
 
     features_saved = 0
-    for ts, value in series.items():
-        # Determinar quality según warmup
-        if value is None or (hasattr(value, "__class__") and value != value):
-            # NaN — periodo de warmup
-            feat_dict = {
-                feature_key: {"value": None, "quality": "warmup"}
-            }
-        else:
-            feat_dict = {
-                feature_key: {"value": float(value), "quality": "ready"}
-            }
-
-        ts_iso = ts.isoformat()
+    for ts_iso, feat_dict in features_by_ts.items():
         save_features(conn, symbol, TIMEFRAME, ts_iso, feat_dict)
-        features_saved += 1
+        features_saved += len(feat_dict)
 
-    print(f"  [{symbol}] Inyectadas {features_saved} features ({feature_key})")
+    print(f"  [{symbol}] Inyectadas {features_saved} features ({', '.join(imported_keys)})")
     conn.close()
 
     return {"symbol": symbol, "rows": rows, "features": features_saved}

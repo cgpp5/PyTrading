@@ -1,43 +1,31 @@
-domingo, 1 de marzo de 2026
-
-16:12
-
 **FeatureSpec — McClellan Oscillator**
 
 **Identidad**
 
 * **name**: mcclellan\_oscillator
 * **version**: 1.0
-* **category**: external\_macro
+* **category**: EXTERNAL_SERIES
 * **source**: csv\_external
 
-La versión es semántica: si cambian reglas de interpolación o disponibilidad, **sube la versión**, aunque el cálculo sea el mismo.
+La version es semantica: si cambian reglas de interpolacion o disponibilidad, **sube la version**, aunque el calculo sea el mismo.
 
 **Semántica temporal (clave)**
 
 **Frecuencia base**
-
 * base\_timeframe: 1D
 
 **Disponibilidad**
-
 * El valor del día **D** está disponible **a partir del cierre de D**.
 * Para timeframes intradía, el valor se considera válido **durante la sesión D+1**.
 
-Esto sustituye de forma explícita el -86400 del código MT5.
-
 **Política de alineación**
-
-* **alignment\_mode**: forward\_projected
+* **alignment**: LINEAR_INTERPOLATION
 * **projection\_rule**:
-  + diario → intradía: interpolación lineal opcional
-  + diario → diario: valor exacto
-
-La interpolación **no es obligatoria**; es una política declarada.
+  + diario -> intradia: interpolacion lineal al alinearse
+  + diario -> diario: valor exacto por fecha normalizada
 
 **Política de interpolación**
-
-* **interpolation**: linear
+* **interpolation**: LINEAR
 * **interpolate\_gaps**: true
 * **interpolate\_intraday**: true
 
@@ -66,19 +54,21 @@ Nunca se devuelve NaN silencioso.
 **Dependencias**
 
 * **depends\_on**: ninguna feature interna.
-* **external\_dependency**: mcclellan\_csv\_vX
-
-Esto permite:
-
-* versionar el CSV,
-* reproducir backtests antiguos,
-* auditar cambios de fuente.
+* **external\_sources**: `McClellanOsc.csv`
 
 **Output**
 
 * **output\_type**: float
 * **output\_columns**:
   + mcclellan\_oscillator
+
+**Persistencia**
+
+* **storage_key**: `mcclellan_oscillator`
+
+Nota:
+
+Aunque el `FeatureSpec` tiene version `1.0`, la clave persistida no usa `@1.0`. Esta excepcion se tomo para mantener simples las series externas manuales respaldadas por CSV.
 
 Una feature, una columna, una semántica.
 
@@ -90,48 +80,3 @@ Eventos que debe emitir FeatureEngine al calcularla:
 * feature\_interpolated
 * feature\_degraded
 * feature\_missing
-
-Esto es crítico para explicar decisiones posteriores.
-
-**Qué NO hace este FeatureSpec**
-
-* No escribe CSV.
-* No corrige histórico.
-* No asume timezone implícito.
-* No depende del timeframe del gráfico.
-* No decide cómo se usa en una estrategia.
-
-**Correspondencia directa con el código MT5**
-
-|  |  |
-| --- | --- |
-| **Comportamiento MT5** | **Estado en FeatureEngine** |
-| Lectura CSV | ✔️ |
-| Interpolación gaps | ✔️ (declarada) |
-| Interpolación intradía | ✔️ (declarada) |
-| Escritura CSV | ❌ |
-| Ajuste -86400 | ❌ (regla explícita) |
-| Mutación histórica | ❌ |
-
-Nada esencial se pierde; todo lo peligroso se elimina.
-
-**Por qué este es el test correcto para FeatureEngine**
-
-Si FeatureEngine puede manejar **esta feature** correctamente:
-
-* exógena,
-* diaria,
-* interpolada,
-* con semántica temporal no trivial,
-
-entonces puede manejar:
-
-* RSI,
-* MACD,
-* spreads,
-* señales macro,
-* cualquier cosa que venga después.
-
-Este FeatureSpec es un **canario en la mina** arquitectónica.
-
-El siguiente paso natural es definir **el FeatureSpec del McClellan Summation Index**, que será casi idéntico pero nos permitirá validar reutilización y versionado. ¿Seguimos con ese o prefieres que traduzcamos este contrato a una estructura de clases concreta (FeatureSpec, ExternalSeriesSpec) antes?

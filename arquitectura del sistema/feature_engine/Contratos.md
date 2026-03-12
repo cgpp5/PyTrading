@@ -48,6 +48,12 @@ Registro explícito de features disponibles.
 * Evita imports implícitos
 * Permite versionado y validación
 
+Estado actual:
+
+* Ya existe una implementación formal de registro en `feature_engine/registry.py`.
+* El registro actual indexa calculadores por `FeatureSpec.name`.
+* La resolución de dependencias ocurre sobre estos nombres semánticos, no sobre claves de persistencia.
+
 Es el equivalente conceptual al resolver de calendario en MarketFeed.
 
 **errors.py**
@@ -134,11 +140,30 @@ Nada fuera de esta carpeta puede decidir timestamps.
 Features derivadas de otras features.
 
 composition/
+├── base.py
+├── bollinger.py
 ├── dag.py
 ├── composed\_features.py
 └── validators.py
 
 Aquí se construye el grafo acíclico y se valida.
+
+**Estado actual**
+
+La carpeta ya existe en la implementacion real, pero todavia no con el DAG completo imaginado arriba.
+
+Implementado hoy:
+
+* `base.py` define el contrato `DerivedFeature`.
+* `bollinger.py` contiene la primera family de features complejas.
+* `validators.py` valida dependencias faltantes, ciclos y desalineaciones de timeframe.
+* `dag.py` construye un orden topológico determinista y ejecuta el grafo.
+
+Pendiente:
+
+* ampliar el catálogo de features compuestas,
+* decidir si futuras composiciones deben consumir columnas calculadas desde el contexto de ejecución o seguir encapsulando sus dependencias internamente,
+* extender validaciones temporales más allá del chequeo actual de timeframe.
 
 **quality/ (Fase 5)**
 

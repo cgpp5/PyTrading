@@ -121,15 +121,28 @@ class TestFeatureRoundTrip:
 class TestValidationRejects:
     """save_features must reject malformed feature dicts."""
 
-    def test_key_without_at(self, conn):
-        """Key without '@' → ValueError."""
+    def test_simple_key_without_version_is_allowed(self, conn):
+        """Simple feature names are allowed for external/manual series."""
         df = _make_df(1)
         save_market_data(conn, "SPY", "1d", df)
 
-        with pytest.raises(ValueError, match="must contain '@'"):
+        save_features(
+            conn, "SPY", "1d", _ts_iso(df, 0),
+            {"mcclellan_oscillator": {"value": 1.0, "quality": "ready"}},
+        )
+
+        loaded = load_market_data(conn, "SPY", "1d")
+        assert loaded["mcclellan_oscillator"].iloc[0] == pytest.approx(1.0)
+
+    def test_invalid_key_format_rejected(self, conn):
+        """Feature keys must be simple identifiers, optionally with @version."""
+        df = _make_df(1)
+        save_market_data(conn, "SPY", "1d", df)
+
+        with pytest.raises(ValueError, match="identifier"):
             save_features(
                 conn, "SPY", "1d", _ts_iso(df, 0),
-                {"sma50": {"value": 1.0, "quality": "ready"}},
+                {"": {"value": 1.0, "quality": "ready"}},
             )
 
     def test_invalid_quality_value(self, conn):

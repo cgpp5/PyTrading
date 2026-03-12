@@ -18,7 +18,8 @@ import pytest
 from feature_engine.errors import ComputationError
 from feature_engine.feature_spec.enums import FeatureCategory, WarmupPolicy
 from feature_engine.primitives.returns import LogReturns, SimpleReturns
-from feature_engine.primitives.rolling import RollingMean, RollingStd
+from feature_engine.primitives.rolling import ExponentialMovingAverage, RollingMean, RollingStd
+from feature_engine.primitives.rsi import RSI
 from feature_engine.primitives.volatility import TrueRange
 from feature_engine.primitives.volume import VolumeZScore
 
@@ -167,6 +168,35 @@ class TestRollingStd:
 
 
 # ==================================================================
+# ExponentialMovingAverage
+# ==================================================================
+
+class TestExponentialMovingAverage:
+
+    def test_spec_contract(self):
+        feat = ExponentialMovingAverage(period=12, timeframe="1h")
+        assert feat.spec.name == "ema_12_close"
+        assert feat.spec.category == FeatureCategory.TECHNICAL
+        assert feat.spec.lookback_required == 12
+
+    def test_values_match_pandas_ewm(self):
+        df = _ohlcv([10.0, 20.0, 30.0, 40.0, 50.0])
+        result = ExponentialMovingAverage(period=3, timeframe="1h").compute(df)
+        expected = df["close"].ewm(span=3, adjust=False, min_periods=3).mean()
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_custom_column(self):
+        df = _ohlcv([1.0, 2.0, 3.0], volumes=[100.0, 200.0, 300.0])
+        result = ExponentialMovingAverage(period=2, column="volume", timeframe="1h").compute(df)
+        expected = df["volume"].ewm(span=2, adjust=False, min_periods=2).mean()
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_period_zero_raises(self):
+        with pytest.raises(ValueError):
+            ExponentialMovingAverage(period=0)
+
+
+# ==================================================================
 # TrueRange
 # ==================================================================
 
@@ -245,6 +275,110 @@ class TestVolumeZScore:
 
 
 # ==================================================================
+# RSI
+# ==================================================================
+
+class TestRSI:
+
+    def test_spec_contract(self):
+        feat = RSI(period=14, timeframe="1d")
+        assert feat.spec.name == "rsi_14"
+        assert feat.spec.version == "1.0"
+        assert feat.spec.category == FeatureCategory.TECHNICAL
+        assert feat.spec.timeframe == "1d"
+        assert feat.spec.lookback_required == 14
+        assert feat.spec.warmup_policy == WarmupPolicy.FIXED_LOOKBACK
+
+    def test_spec_name_reflects_period(self):
+        assert RSI(period=7).spec.name == "rsi_7"
+        assert RSI(period=21).spec.name == "rsi_21"
+
+    def test_warmup_produces_nan(self):
+        """First `period` bars must be NaN (need `period` deltas)."""
+        closes = [float(i) for i in range(1, 20)]
+        df = _ohlcv(closes)
+        result = RSI(period=5, timeframe="1h").compute(df)
+        # Bars 0..4 should be NaN (diff eats 1, rolling(5) eats 4 more)
+        for i in range(5):
+            assert pd.isna(result.iloc[i]), f"bar {i} should be NaN"
+        # Bar 5 onward should be valid
+        assert not pd.isna(result.iloc[5])
+
+    def test_all_gains(self):
+        """Monotonically increasing close → RSI = 100."""
+        closes = [100.0, 101.0, 102.0, 103.0, 104.0, 105.0]
+        df = _ohlcv(closes)
+        result = RSI(period=3, timeframe="1h").compute(df)
+        # avg_loss = 0 → rs = inf → RSI = 100
+        assert result.iloc[-1] == pytest.approx(100.0)
+
+    def test_all_losses(self):
+        """Monotonically decreasing close → RSI = 0."""
+        closes = [105.0, 104.0, 103.0, 102.0, 101.0, 100.0]
+        df = _ohlcv(closes)
+        result = RSI(period=3, timeframe="1h").compute(df)
+        # avg_gain = 0 → rs = 0 → RSI = 0
+        assert result.iloc[-1] == pytest.approx(0.0)
+
+    def test_equal_gains_losses(self):
+        """Alternating equal gains/losses → RSI symmetric around 50.
+
+        With Wilder smoothing, the most recent bar gets higher weight,
+        so RSI oscillates above/below 50 on gain/loss bars. In steady
+        state, consecutive values sum to 100 (symmetric around 50).
+        """
+        closes = [100.0 + 10.0 * (i % 2) for i in range(201)]
+        df = _ohlcv(closes)
+        result = RSI(period=4, timeframe="1h").compute(df)
+        # Consecutive values should be symmetric around 50
+        assert (result.iloc[-1] + result.iloc[-2]) == pytest.approx(100.0, abs=0.01)
+
+    def test_known_values(self):
+        """Verify RSI against manual SMA calculation."""
+        closes = [44.0, 44.25, 44.5, 43.75, 44.5, 44.25, 43.5]
+        df = _ohlcv(closes)
+        result = RSI(period=3, timeframe="1h").compute(df)
+
+        # Bar 3 (index 3): deltas = [+0.25, +0.25, -0.75]
+        # gains=[0.25,0.25,0], losses=[0,0,0.75]
+        # avg_gain=0.5/3, avg_loss=0.75/3
+        # RS = 0.5/0.75 = 2/3, RSI = 100 - 100/(1+2/3) = 100 - 60 = 40
+        assert result.iloc[3] == pytest.approx(40.0)
+
+    def test_custom_column(self):
+        df = _ohlcv([10.0, 12.0, 11.0, 13.0, 12.0])
+        df["open"] = [100.0, 102.0, 101.0, 103.0, 102.0]
+        result = RSI(period=2, column="open", timeframe="1h").compute(df)
+        # Should compute on "open" column, not "close"
+        assert not pd.isna(result.iloc[2])
+
+    def test_period_zero_raises(self):
+        with pytest.raises(ValueError):
+            RSI(period=0)
+
+    def test_missing_column_raises(self):
+        df = pd.DataFrame({"open": [1.0, 2.0, 3.0]})
+        with pytest.raises(ComputationError, match="close"):
+            RSI(period=2).compute(df)
+
+    def test_nan_close_propagates(self):
+        closes = [100.0, 101.0, float("nan"), 103.0, 104.0, 105.0]
+        df = _ohlcv(closes)
+        result = RSI(period=2, timeframe="1h").compute(df)
+        # NaN in the source should propagate through the rolling window
+        assert pd.isna(result.iloc[2])
+
+    def test_output_bounded_0_100(self):
+        """RSI values must always be in [0, 100] or NaN."""
+        closes = [100 + (i % 7) * (-1)**i for i in range(30)]
+        df = _ohlcv([float(c) for c in closes])
+        result = RSI(period=5, timeframe="1h").compute(df)
+        valid = result.dropna()
+        assert (valid >= 0.0).all()
+        assert (valid <= 100.0).all()
+
+
+# ==================================================================
 # Cross-cutting: PrimitiveFeature contract
 # ==================================================================
 
@@ -260,6 +394,7 @@ class TestPrimitiveContract:
             RollingStd(window=3, timeframe="1h"),
             TrueRange("1h"),
             VolumeZScore(window=3, timeframe="1h"),
+            RSI(period=3, timeframe="1h"),
         ]:
             result = feat.compute(df)
             assert (result.index == df.index).all(), f"{feat.spec.name} index mismatch"
@@ -284,6 +419,7 @@ class TestPrimitiveContract:
             RollingMean(window=2, timeframe="1h"),
             TrueRange("1h"),
             VolumeZScore(window=2, timeframe="1h"),
+            RSI(period=2, timeframe="1h"),
         ]:
             result = feat.compute(df)
             assert len(result) == len(df), f"{feat.spec.name} length mismatch"

@@ -27,7 +27,8 @@ let chart         = null;
 let candleSeries  = null;
 let volumeSeries  = null;
 let volumePane    = null;
-let featureSeries = null;
+let indicatorPane = null;
+let indicatorSeries = [];
 
 // ── Helpers ──
 
@@ -67,15 +68,15 @@ async function populateTimeframes() {
     });
 }
 
-async function populateFeatures(symbol, timeframe) {
+async function populateIndicators(symbol, timeframe) {
     const data = await fetchJSON(
-        `/api/available-features?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
+        `/api/available-indicators?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
     );
     featureSelect.innerHTML = '<option value="">(ninguno)</option>';
-    data.features.forEach(f => {
+    data.indicators.forEach(indicator => {
         const opt = document.createElement('option');
-        opt.value = f;
-        opt.textContent = f;
+        opt.value = indicator.key;
+        opt.textContent = indicator.name;
         featureSelect.appendChild(opt);
     });
 }
@@ -89,7 +90,8 @@ function destroyChart() {
         candleSeries = null;
         volumeSeries = null;
         volumePane = null;
-        featureSeries = null;
+        indicatorPane = null;
+        indicatorSeries = [];
     }
 }
 
@@ -166,8 +168,8 @@ async function loadOHLCV() {
 
         setStatus(`${symbol} / ${timeframe} — ${data.candles.length} velas`);
 
-        // Populate features dropdown for this symbol/timeframe
-        await populateFeatures(symbol, timeframe);
+        // Populate indicators dropdown for this symbol/timeframe
+        await populateIndicators(symbol, timeframe);
 
     } catch (err) {
         setStatus(`Error: ${err.message}`);
@@ -175,41 +177,73 @@ async function loadOHLCV() {
     }
 }
 
-// ── Load feature overlay ──
+function clearIndicatorSeries() {
+    if (!chart || indicatorSeries.length === 0) return;
+    indicatorSeries.forEach(series => chart.removeSeries(series));
+    indicatorSeries = [];
+    if (indicatorPane) {
+        chart.removePane(indicatorPane.paneIndex());
+        indicatorPane = null;
+    }
+}
 
-async function loadFeature() {
+// ── Load indicator overlay ──
+
+async function loadIndicator() {
     const symbol = symbolSelect.value;
     const timeframe = timeframeSelect.value;
-    const feature = featureSelect.value;
+    const indicator = featureSelect.value;
 
-    // Remove previous feature overlay
-    if (featureSeries && chart) {
-        chart.removeSeries(featureSeries);
-        featureSeries = null;
-    }
+    clearIndicatorSeries();
 
-    if (!feature || !chart) return;
+    if (!indicator || !chart) return;
 
     try {
         const data = await fetchJSON(
-            `/api/features?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&feature=${encodeURIComponent(feature)}`
+            `/api/indicator?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&indicator=${encodeURIComponent(indicator)}`
         );
 
-        if (data.data.length === 0) {
-            setStatus(`Feature ${feature}: sin datos`);
+        if (data.series.length === 0) {
+            setStatus(`Indicator ${indicator}: sin datos`);
             return;
         }
 
-        featureSeries = chart.addSeries(LineSeries, {
-            color: '#fab387',
-            lineWidth: 2,
-        });
-        featureSeries.setData(data.data);
+        let paneIndex;
+        if (data.pane === 'separate') {
+            indicatorPane = chart.addPane();
+            indicatorPane.setHeight(140);
+            paneIndex = indicatorPane.paneIndex();
+        }
 
-        setStatus(`${symbol} / ${timeframe} + ${feature}`);
+        data.series.forEach(item => {
+            const definition = item.seriesType === 'histogram' ? HistogramSeries : LineSeries;
+            const options = item.seriesType === 'histogram'
+                ? {
+                    color: item.color,
+                    priceLineVisible: false,
+                    lastValueVisible: true,
+                }
+                : {
+                    color: item.color,
+                    lineWidth: item.lineWidth,
+                    lastValueVisible: true,
+                    priceLineVisible: false,
+                };
+            const series = chart.addSeries(definition, options, paneIndex);
+            const seriesData = item.seriesType === 'histogram'
+                ? item.data.map(point => ({
+                    ...point,
+                    color: point.value >= 0 ? item.color : item.negativeColor,
+                }))
+                : item.data;
+            series.setData(seriesData);
+            indicatorSeries.push(series);
+        });
+
+        setStatus(`${symbol} / ${timeframe} + ${data.name}`);
 
     } catch (err) {
-        setStatus(`Error feature: ${err.message}`);
+        setStatus(`Error indicator: ${err.message}`);
         console.error(err);
     }
 }
@@ -225,7 +259,7 @@ window.addEventListener('resize', () => {
 // ── Event bindings ──
 
 loadBtn.addEventListener('click', loadOHLCV);
-featureSelect.addEventListener('change', loadFeature);
+featureSelect.addEventListener('change', loadIndicator);
 
 // ── Init ──
 
