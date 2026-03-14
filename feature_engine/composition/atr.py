@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from market_feed.timeframes import Timeframe
@@ -25,7 +26,7 @@ class AverageTrueRange(DerivedFeature):
         if period < 1:
             raise ValueError("period must be >= 1")
         self._period = period
-        self._timeframe = timeframe
+        self._timeframe: Timeframe = timeframe
         self._spec = FeatureSpec(
             name=f"atr_{period}",
             version="1.0",
@@ -45,4 +46,26 @@ class AverageTrueRange(DerivedFeature):
     def compute(self, df: pd.DataFrame) -> pd.Series:
         self._validate_columns(df, {"high", "low", "close"})
         true_range = df["true_range"] if "true_range" in df.columns else TrueRange(self._timeframe).compute(df)
-        return true_range.ewm(alpha=1 / self._period, adjust=False, min_periods=self._period).mean().astype("float64")
+        true_range = true_range.astype("float64")
+
+        atr = pd.Series(np.nan, index=true_range.index, dtype="float64")
+        seed = true_range.rolling(window=self._period, min_periods=self._period).mean()
+        first_valid = seed.first_valid_index()
+        if first_valid is None:
+            return atr
+
+        valid_positions = np.flatnonzero(seed.notna().to_numpy())
+        if len(valid_positions) == 0:
+            return atr
+
+        first_valid_pos = int(valid_positions[0])
+        atr.iloc[first_valid_pos] = float(seed.loc[first_valid])
+
+        for pos in range(first_valid_pos + 1, len(true_range)):
+            previous_atr = atr.iloc[pos - 1]
+            current_true_range = true_range.iloc[pos]
+            if pd.isna(previous_atr) or pd.isna(current_true_range):
+                continue
+            atr.iloc[pos] = ((previous_atr * (self._period - 1)) + current_true_range) / self._period
+
+        return atr

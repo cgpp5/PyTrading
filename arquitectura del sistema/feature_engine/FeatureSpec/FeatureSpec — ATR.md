@@ -77,6 +77,14 @@ $$
 donde $n = period$.
 
 La implementacion actual usa la forma de `ewm` equivalente a Wilder smoothing con `alpha = 1 / period`, `adjust=False` y `min_periods=period`.
+La implementacion debe sembrar ATR con la media simple de los primeros `period` valores de True Range y solo despues continuar con la recurrencia de Wilder.
+
+En otras palabras:
+
+* primer valor maduro: `SMA(TR_1 ... TR_n)`
+* valores siguientes: recurrencia de Wilder
+
+Esto importa porque una `ewm` directa desde el inicio no reproduce exactamente los valores de plataformas como MT5 en la fase inicial de la serie.
 
 **Output**
 

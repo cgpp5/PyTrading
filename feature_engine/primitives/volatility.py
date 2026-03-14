@@ -46,3 +46,57 @@ class TrueRange(PrimitiveFeature):
         high_prev = (df["high"] - prev_close).abs()
         low_prev = (df["low"] - prev_close).abs()
         return pd.concat([high_low, high_prev, low_prev], axis=1).max(axis=1)
+
+
+class PositiveDirectionalMovement(PrimitiveFeature):
+    """Positive directional movement (+DM) per Wilder."""
+
+    def __init__(self, timeframe: Timeframe = "1d") -> None:
+        self._spec = FeatureSpec(
+            name="plus_dm",
+            version="1.0",
+            category=FeatureCategory.TECHNICAL,
+            timeframe=timeframe,
+            alignment=AlignmentPolicy.NONE,
+            availability=AvailabilityRule.AT_CLOSE,
+            lookback_required=1,
+            warmup_policy=WarmupPolicy.FIXED_LOOKBACK,
+        )
+
+    @property
+    def spec(self) -> FeatureSpec:
+        return self._spec
+
+    def compute(self, df: pd.DataFrame) -> pd.Series:
+        self._validate_columns(df, {"high", "low"})
+        up_move = df["high"].diff()
+        down_move = df["low"].shift(1) - df["low"]
+        result = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+        return result.fillna(0.0).astype("float64").rename(None)
+
+
+class NegativeDirectionalMovement(PrimitiveFeature):
+    """Negative directional movement (-DM) per Wilder."""
+
+    def __init__(self, timeframe: Timeframe = "1d") -> None:
+        self._spec = FeatureSpec(
+            name="minus_dm",
+            version="1.0",
+            category=FeatureCategory.TECHNICAL,
+            timeframe=timeframe,
+            alignment=AlignmentPolicy.NONE,
+            availability=AvailabilityRule.AT_CLOSE,
+            lookback_required=1,
+            warmup_policy=WarmupPolicy.FIXED_LOOKBACK,
+        )
+
+    @property
+    def spec(self) -> FeatureSpec:
+        return self._spec
+
+    def compute(self, df: pd.DataFrame) -> pd.Series:
+        self._validate_columns(df, {"high", "low"})
+        up_move = df["high"].diff()
+        down_move = df["low"].shift(1) - df["low"]
+        result = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+        return result.fillna(0.0).astype("float64").rename(None)

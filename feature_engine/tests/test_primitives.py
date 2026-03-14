@@ -18,9 +18,9 @@ import pytest
 from feature_engine.errors import ComputationError
 from feature_engine.feature_spec.enums import FeatureCategory, WarmupPolicy
 from feature_engine.primitives.returns import LogReturns, SimpleReturns
-from feature_engine.primitives.rolling import ExponentialMovingAverage, RollingMean, RollingStd
+from feature_engine.primitives.rolling import ExponentialMovingAverage, RollingMean, RollingStd, WilderMovingAverage
 from feature_engine.primitives.rsi import RSI
-from feature_engine.primitives.volatility import TrueRange
+from feature_engine.primitives.volatility import NegativeDirectionalMovement, PositiveDirectionalMovement, TrueRange
 from feature_engine.primitives.volume import VolumeZScore
 
 
@@ -197,6 +197,40 @@ class TestExponentialMovingAverage:
 
 
 # ==================================================================
+# WilderMovingAverage
+# ==================================================================
+
+class TestWilderMovingAverage:
+
+    def test_spec_contract(self):
+        feat = WilderMovingAverage(period=14, timeframe="1h")
+        assert feat.spec.name == "wilder_ma_14_close"
+        assert feat.spec.category == FeatureCategory.TECHNICAL
+        assert feat.spec.lookback_required == 14
+
+    def test_values_use_sma_seed_then_wilder_recursion(self):
+        df = _ohlcv([1.0, 2.0, 3.0, 4.0, 5.0])
+        result = WilderMovingAverage(period=3, timeframe="1h").compute(df)
+
+        expected = pd.Series(
+            [float("nan"), float("nan"), 2.0, (2.0 * 2 + 4.0) / 3, (((2.0 * 2 + 4.0) / 3) * 2 + 5.0) / 3],
+            index=df.index,
+            dtype="float64",
+        )
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_custom_column(self):
+        df = _ohlcv([10.0, 20.0, 30.0], volumes=[100.0, 200.0, 300.0])
+        result = WilderMovingAverage(period=2, column="volume", timeframe="1h").compute(df)
+        expected = pd.Series([float("nan"), 150.0, 225.0], index=df.index, dtype="float64")
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_period_zero_raises(self):
+        with pytest.raises(ValueError):
+            WilderMovingAverage(period=0)
+
+
+# ==================================================================
 # TrueRange
 # ==================================================================
 
@@ -238,6 +272,66 @@ class TestTrueRange:
         df = pd.DataFrame({"close": [1.0]})
         with pytest.raises(ComputationError, match="high"):
             TrueRange().compute(df)
+
+
+# ==================================================================
+# Directional Movement
+# ==================================================================
+
+class TestPositiveDirectionalMovement:
+
+    def test_spec_contract(self):
+        feat = PositiveDirectionalMovement(timeframe="1h")
+        assert feat.spec.name == "plus_dm"
+        assert feat.spec.category == FeatureCategory.TECHNICAL
+        assert feat.spec.lookback_required == 1
+
+    def test_values_follow_wilder_rule(self):
+        df = _ohlcv(
+            [9.0, 10.0, 11.0, 10.0, 12.0],
+            highs=[10.0, 12.0, 13.0, 12.0, 14.0],
+            lows=[8.0, 9.0, 10.0, 8.0, 9.0],
+        )
+        result = PositiveDirectionalMovement(timeframe="1h").compute(df)
+        expected = pd.Series([0.0, 2.0, 1.0, 0.0, 2.0], index=df.index, dtype="float64")
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_tie_produces_zero(self):
+        df = _ohlcv(
+            [9.0, 10.0],
+            highs=[10.0, 12.0],
+            lows=[8.0, 6.0],
+        )
+        result = PositiveDirectionalMovement().compute(df)
+        assert result.iloc[1] == pytest.approx(0.0)
+
+
+class TestNegativeDirectionalMovement:
+
+    def test_spec_contract(self):
+        feat = NegativeDirectionalMovement(timeframe="1h")
+        assert feat.spec.name == "minus_dm"
+        assert feat.spec.category == FeatureCategory.TECHNICAL
+        assert feat.spec.lookback_required == 1
+
+    def test_values_follow_wilder_rule(self):
+        df = _ohlcv(
+            [9.0, 10.0, 11.0, 10.0, 12.0],
+            highs=[10.0, 12.0, 13.0, 12.0, 14.0],
+            lows=[8.0, 9.0, 10.0, 8.0, 9.0],
+        )
+        result = NegativeDirectionalMovement(timeframe="1h").compute(df)
+        expected = pd.Series([0.0, 0.0, 0.0, 2.0, 0.0], index=df.index, dtype="float64")
+        pd.testing.assert_series_equal(result, expected)
+
+    def test_tie_produces_zero(self):
+        df = _ohlcv(
+            [9.0, 10.0],
+            highs=[10.0, 12.0],
+            lows=[8.0, 6.0],
+        )
+        result = NegativeDirectionalMovement().compute(df)
+        assert result.iloc[1] == pytest.approx(0.0)
 
 
 # ==================================================================

@@ -49,7 +49,11 @@ def store():
         ts_iso = dates[i].isoformat()
         save_features(conn, "TEST", "1d", ts_iso, {
             "sma_50@1.0": {"value": 100.0 + i, "quality": "ready"},
+            "sma_osc_20@1.0": {"value": 2.5 + i, "quality": "ready"},
             "atr_14@1.0": {"value": 1.5 + i, "quality": "ready"},
+            "adx_14@1.0": {"value": 20.0 + i, "quality": "ready"},
+            "plus_di_14@1.0": {"value": 25.0 + i, "quality": "ready"},
+            "minus_di_14@1.0": {"value": 15.0 + i, "quality": "ready"},
             "bollinger_middle_20@1.0": {"value": 101.0 + i, "quality": "ready"},
             "bollinger_upper_20_2@1.0": {"value": 103.0 + i, "quality": "ready"},
             "bollinger_lower_20_2@1.0": {"value": 99.0 + i, "quality": "ready"},
@@ -132,6 +136,7 @@ def test_get_available_features(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["features"] == [
+        "adx_14@1.0",
         "atr_14@1.0",
         "bollinger_lower_20_2@1.0",
         "bollinger_middle_20@1.0",
@@ -139,7 +144,10 @@ def test_get_available_features(client):
         "macd_histogram_12_26_9_close@1.0",
         "macd_line_12_26_9_close@1.0",
         "macd_signal_12_26_9_close@1.0",
+        "minus_di_14@1.0",
+        "plus_di_14@1.0",
         "sma_50@1.0",
+        "sma_osc_20@1.0",
     ]
 
 
@@ -152,26 +160,39 @@ def test_get_available_indicators_groups_bollinger(client):
 
     indicators = resp.json()["indicators"]
     assert [indicator["key"] for indicator in indicators] == [
+        "adx_family_14@1.0",
         "atr_14@1.0",
         "bollinger_bands_20_2@1.0",
         "macd_12_26_9_close@1.0",
+        "sma_osc_20@1.0",
         "sma_50@1.0",
     ]
     assert indicators[0]["pane"] == "separate"
-    assert indicators[0]["kind"] == "atr"
-    assert indicators[0]["name"] == "ATR (14)"
-    assert indicators[1]["name"] == "Bollinger Bands (20, 2)"
-    assert [series["label"] for series in indicators[1]["series"]] == [
+    assert indicators[0]["kind"] == "adx"
+    assert indicators[0]["name"] == "ADX (14)"
+    assert [series["label"] for series in indicators[0]["series"]] == [
+        "ADX",
+        "+DI",
+        "-DI",
+    ]
+    assert indicators[1]["pane"] == "separate"
+    assert indicators[1]["kind"] == "atr"
+    assert indicators[1]["name"] == "ATR (14)"
+    assert indicators[2]["name"] == "Bollinger Bands (20, 2)"
+    assert [series["label"] for series in indicators[2]["series"]] == [
         "Middle",
         "Upper",
         "Lower",
     ]
-    assert indicators[2]["pane"] == "separate"
-    assert [series["seriesType"] for series in indicators[2]["series"]] == [
+    assert indicators[3]["pane"] == "separate"
+    assert [series["seriesType"] for series in indicators[3]["series"]] == [
         "line",
         "line",
         "histogram",
     ]
+    assert indicators[4]["kind"] == "sma_osc"
+    assert indicators[4]["pane"] == "separate"
+    assert indicators[4]["name"] == "SMA Osc (20)"
 
 
 def test_get_available_features_includes_simple_keys(store):
@@ -193,6 +214,7 @@ def test_get_available_features_includes_simple_keys(store):
 
     assert resp.status_code == 200
     assert resp.json()["features"] == [
+        "adx_14@1.0",
         "atr_14@1.0",
         "bollinger_lower_20_2@1.0",
         "bollinger_middle_20@1.0",
@@ -201,7 +223,10 @@ def test_get_available_features_includes_simple_keys(store):
         "macd_line_12_26_9_close@1.0",
         "macd_signal_12_26_9_close@1.0",
         "mcclellan_oscillator",
+        "minus_di_14@1.0",
+        "plus_di_14@1.0",
         "sma_50@1.0",
+        "sma_osc_20@1.0",
     ]
 
     set_store(None)
@@ -226,10 +251,12 @@ def test_get_available_indicators_includes_simple_scalar_keys(store):
 
     assert resp.status_code == 200
     assert [indicator["key"] for indicator in resp.json()["indicators"]] == [
+        "adx_family_14@1.0",
         "atr_14@1.0",
         "bollinger_bands_20_2@1.0",
         "macd_12_26_9_close@1.0",
         "mcclellan_oscillator",
+        "sma_osc_20@1.0",
         "sma_50@1.0",
     ]
 
@@ -303,6 +330,32 @@ def test_get_indicator_returns_atr_scalar_in_separate_pane(client):
     assert len(data["series"][0]["data"]) == 3
 
 
+def test_get_indicator_returns_grouped_adx_series(client):
+    resp = client.get(
+        "/api/indicator",
+        params={"symbol": "TEST", "timeframe": "1d", "indicator": "adx_family_14@1.0"},
+    )
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["indicator"] == "adx_family_14@1.0"
+    assert data["name"] == "ADX (14)"
+    assert data["kind"] == "adx"
+    assert data["pane"] == "separate"
+    assert len(data["series"]) == 3
+    assert [series["label"] for series in data["series"]] == [
+        "ADX",
+        "+DI",
+        "-DI",
+    ]
+    assert [series["seriesType"] for series in data["series"]] == [
+        "line",
+        "line",
+        "line",
+    ]
+    assert all(len(series["data"]) == 3 for series in data["series"])
+
+
 def test_get_indicator_returns_grouped_macd_series(client):
     resp = client.get(
         "/api/indicator",
@@ -340,6 +393,25 @@ def test_get_indicator_returns_scalar_indicator(client):
     assert data["kind"] == "scalar"
     assert len(data["series"]) == 1
     assert data["series"][0]["key"] == "sma_50@1.0"
+
+
+def test_get_indicator_returns_sma_osc_in_separate_pane(client):
+    resp = client.get(
+        "/api/indicator",
+        params={"symbol": "TEST", "timeframe": "1d", "indicator": "sma_osc_20@1.0"},
+    )
+    assert resp.status_code == 200
+
+    data = resp.json()
+    assert data["indicator"] == "sma_osc_20@1.0"
+    assert data["name"] == "SMA Osc (20)"
+    assert data["kind"] == "sma_osc"
+    assert data["pane"] == "separate"
+    assert len(data["series"]) == 1
+    assert data["series"][0]["label"] == "SMA Osc"
+    assert data["series"][0]["seriesType"] == "line"
+    assert data["series"][0]["valueFormat"] == "percent"
+    assert len(data["series"][0]["data"]) == 3
 
 
 def test_get_features_nonexistent(client):

@@ -92,11 +92,22 @@ Parametros:
 
 Estado:
 
-- No implementado todavia.
+- Ya implementado en `feature_engine/composition/adx.py`.
+- Family persistida como tres features derivadas:
+  - `adx_<period>@1.0`
+  - `plus_di_<period>@1.0`
+  - `minus_di_<period>@1.0`
+- Usa Wilder smoothing real sobre `true_range`, `plus_dm` y `minus_dm`.
+- La composicion ya puede validarse con el registry formal y el DAG de ejecucion.
 
 ### SMA Osc (Distance to SMA)
 
 Estado:
 
-- No implementado todavia.
+- Ya implementado en `feature_engine/composition/sma_osc.py`.
+- Nombre persistido:
+  - `sma_osc_<period>@1.0`
+- Formula actual:
+  - `((close - sma(close, period)) / sma(close, period)) * 100`
+- En TradingUI sale como indicador escalar en pane separado.
 		

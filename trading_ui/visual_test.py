@@ -20,6 +20,11 @@ from market_feed.market_feed import MarketFeed, ProviderTier
 from market_feed.observability import InMemoryObservability
 from market_feed.providers.yfinance import YFinanceProvider
 
+from feature_engine.composition.adx import (
+    AverageDirectionalIndex,
+    MinusDirectionalIndex,
+    PlusDirectionalIndex,
+)
 from feature_engine.composition.atr import AverageTrueRange
 from feature_engine.composition.bollinger import (
     BollingerBandWidth,
@@ -28,6 +33,7 @@ from feature_engine.composition.bollinger import (
     BollingerUpperBand,
 )
 from feature_engine.composition.macd import MACDHistogram, MACDLine, MACDSignal
+from feature_engine.composition.sma_osc import SMAOscillator
 from feature_engine.errors import ComputationError
 from feature_engine.primitives.external import McClellanOscillator, McClellanSummation
 from feature_engine.primitives.returns import SimpleReturns, LogReturns
@@ -54,9 +60,13 @@ def _build_primitives():
         BollingerLowerBand(period=20, timeframe=TIMEFRAME),
         BollingerBandWidth(period=20, timeframe=TIMEFRAME),
         AverageTrueRange(period=14, timeframe=TIMEFRAME),
+        PlusDirectionalIndex(period=14, timeframe=TIMEFRAME),
+        MinusDirectionalIndex(period=14, timeframe=TIMEFRAME),
+        AverageDirectionalIndex(period=14, timeframe=TIMEFRAME),
         MACDLine(timeframe=TIMEFRAME),
         MACDSignal(timeframe=TIMEFRAME),
         MACDHistogram(timeframe=TIMEFRAME),
+        SMAOscillator(period=20, timeframe=TIMEFRAME),
         TrueRange(timeframe=TIMEFRAME),
         VolumeZScore(window=20, timeframe=TIMEFRAME),
         RSI(period=14, timeframe=TIMEFRAME),

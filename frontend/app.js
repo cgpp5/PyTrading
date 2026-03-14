@@ -36,6 +36,17 @@ function setStatus(msg) {
     statusEl.textContent = msg;
 }
 
+function buildPriceFormat(valueFormat) {
+    if (valueFormat === 'percent') {
+        return {
+            type: 'custom',
+            minMove: 0.01,
+            formatter: value => `${value.toFixed(2)}%`,
+        };
+    }
+    return undefined;
+}
+
 async function fetchJSON(url) {
     const resp = await fetch(url);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -181,10 +192,7 @@ function clearIndicatorSeries() {
     if (!chart || indicatorSeries.length === 0) return;
     indicatorSeries.forEach(series => chart.removeSeries(series));
     indicatorSeries = [];
-    if (indicatorPane) {
-        chart.removePane(indicatorPane.paneIndex());
-        indicatorPane = null;
-    }
+    indicatorPane = null;
 }
 
 // ── Load indicator overlay ──
@@ -217,17 +225,20 @@ async function loadIndicator() {
 
         data.series.forEach(item => {
             const definition = item.seriesType === 'histogram' ? HistogramSeries : LineSeries;
+            const priceFormat = buildPriceFormat(item.valueFormat);
             const options = item.seriesType === 'histogram'
                 ? {
                     color: item.color,
                     priceLineVisible: false,
                     lastValueVisible: true,
+                    priceFormat,
                 }
                 : {
                     color: item.color,
                     lineWidth: item.lineWidth,
                     lastValueVisible: true,
                     priceLineVisible: false,
+                    priceFormat,
                 };
             const series = chart.addSeries(definition, options, paneIndex);
             const seriesData = item.seriesType === 'histogram'

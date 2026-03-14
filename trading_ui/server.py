@@ -61,6 +61,18 @@ _MACD_HISTOGRAM_RE = re.compile(
 _ATR_RE = re.compile(
     r"^atr_(?P<period>\d+)@(?P<version>[A-Za-z0-9._-]+)$"
 )
+_SMA_OSC_RE = re.compile(
+    r"^sma_osc_(?P<period>\d+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
+_ADX_RE = re.compile(
+    r"^adx_(?P<period>\d+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
+_PLUS_DI_RE = re.compile(
+    r"^plus_di_(?P<period>\d+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
+_MINUS_DI_RE = re.compile(
+    r"^minus_di_(?P<period>\d+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
 
 # ---------------------------------------------------------------------------
 # Application
@@ -126,6 +138,7 @@ def _build_indicator_catalog(feature_cols: list[str]) -> list[dict[str, Any]]:
     middle_by_period: dict[tuple[str, str], str] = {}
     bands: dict[tuple[str, str, str], dict[str, str]] = {}
     macd_parts: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
+    adx_parts: dict[tuple[str, str], dict[str, str]] = {}
 
     for col in feature_cols:
         middle_match = _BOLLINGER_MIDDLE_RE.fullmatch(col)
@@ -208,6 +221,47 @@ def _build_indicator_catalog(feature_cols: list[str]) -> list[dict[str, Any]]:
                     }
                 ],
             })
+            continue
+
+        sma_osc_match = _SMA_OSC_RE.fullmatch(col)
+        if sma_osc_match:
+            consumed.add(col)
+            indicators.append({
+                "key": col,
+                "name": f"SMA Osc ({sma_osc_match.group('period')})",
+                "kind": "sma_osc",
+                "overlay": False,
+                "pane": "separate",
+                "series": [
+                    {
+                        "key": col,
+                        "label": "SMA Osc",
+                        "color": "#cba6f7",
+                        "lineWidth": 2,
+                        "seriesType": "line",
+                        "valueFormat": "percent",
+                    }
+                ],
+            })
+            continue
+
+        adx_match = _ADX_RE.fullmatch(col)
+        if adx_match:
+            key = (adx_match.group("period"), adx_match.group("version"))
+            adx_parts.setdefault(key, {})["adx"] = col
+            continue
+
+        plus_di_match = _PLUS_DI_RE.fullmatch(col)
+        if plus_di_match:
+            key = (plus_di_match.group("period"), plus_di_match.group("version"))
+            adx_parts.setdefault(key, {})["plus_di"] = col
+            continue
+
+        minus_di_match = _MINUS_DI_RE.fullmatch(col)
+        if minus_di_match:
+            key = (minus_di_match.group("period"), minus_di_match.group("version"))
+            adx_parts.setdefault(key, {})["minus_di"] = col
+            continue
 
     for (period, deviation, version), parts in sorted(bands.items()):
         middle = middle_by_period.get((period, version))
@@ -284,6 +338,45 @@ def _build_indicator_catalog(feature_cols: list[str]) -> list[dict[str, Any]]:
                     "negativeColor": "#f38ba8",
                     "lineWidth": 1,
                     "seriesType": "histogram",
+                },
+            ],
+        })
+
+    for (period, version), parts in sorted(adx_parts.items()):
+        adx = parts.get("adx")
+        plus_di = parts.get("plus_di")
+        minus_di = parts.get("minus_di")
+        if not (adx and plus_di and minus_di):
+            continue
+
+        consumed.update({adx, plus_di, minus_di})
+        indicators.append({
+            "key": f"adx_family_{period}@{version}",
+            "name": f"ADX ({period})",
+            "kind": "adx",
+            "overlay": False,
+            "pane": "separate",
+            "series": [
+                {
+                    "key": adx,
+                    "label": "ADX",
+                    "color": "#f9e2af",
+                    "lineWidth": 2,
+                    "seriesType": "line",
+                },
+                {
+                    "key": plus_di,
+                    "label": "+DI",
+                    "color": "#a6e3a1",
+                    "lineWidth": 2,
+                    "seriesType": "line",
+                },
+                {
+                    "key": minus_di,
+                    "label": "-DI",
+                    "color": "#f38ba8",
+                    "lineWidth": 2,
+                    "seriesType": "line",
                 },
             ],
         })
@@ -512,6 +605,7 @@ async def get_indicator(
             "negativeColor": item.get("negativeColor"),
             "lineWidth": item["lineWidth"],
             "seriesType": item.get("seriesType", "line"),
+            "valueFormat": item.get("valueFormat"),
             "data": data,
         })
 
