@@ -19,6 +19,22 @@ from trading_ui.server import app, set_store
 # Fixtures
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _no_network_ingest(monkeypatch):
+    """Evita tocar la red en los tests de API.
+
+    ``_ensure_data`` delega en ``ingest.ensure_symbol_data``, que descarga del
+    proveedor cuando los datos no son frescos (p. ej. el TEST sembrado está
+    obsoleto). En tests eso inyecta features/red inesperadas. Lo convertimos en
+    un no-op que reporta ``cached`` para que el backend sirva lo sembrado sin
+    red, de forma determinista.
+    """
+    async def fake_ensure(symbol, timeframe):
+        return {"action": "cached"}
+
+    monkeypatch.setattr("trading_ui.server._ensure_data", fake_ensure)
+
+
 @pytest.fixture()
 def store():
     """In-memory DataStoreCore with seeded test data."""
@@ -119,6 +135,10 @@ def test_get_ohlcv(client):
     times = [x["time"] for x in data["candles"]]
     assert times == sorted(times)
 
+    # Feedback de estado: con velas → ok
+    assert data["status"] == "ok"
+    assert data["message"] is None
+
 
 def test_get_ohlcv_nonexistent_symbol(client):
     resp = client.get("/api/ohlcv", params={"symbol": "NONEXIST", "timeframe": "1d"})
@@ -126,6 +146,22 @@ def test_get_ohlcv_nonexistent_symbol(client):
     data = resp.json()
     assert data["candles"] == []
     assert data["volume"] == []
+    # Sin velas y sin haber descargado (ingesta no-op en tests) → empty.
+    assert data["status"] == "empty"
+    assert data["message"] is not None
+
+
+def test_ingest_status_mapping():
+    """El helper traduce la acción de la ingesta a status/message de API."""
+    from trading_ui.server import _ingest_status
+
+    assert _ingest_status({"action": "cached"}, "X", has_data=True) == {
+        "status": "ok", "message": None,
+    }
+    assert _ingest_status({"action": "fetched"}, "X", has_data=True)["status"] == "ok"
+    assert _ingest_status({"action": "no_data"}, "X", has_data=False)["status"] == "no_data"
+    assert _ingest_status({"action": "error", "error": "boom"}, "X", has_data=False)["status"] == "error"
+    assert _ingest_status(None, "X", has_data=False)["status"] == "empty"
 
 
 def test_get_available_features(client):
@@ -250,7 +286,8 @@ def test_get_available_indicators_includes_simple_scalar_keys(store):
         )
 
     assert resp.status_code == 200
-    assert [indicator["key"] for indicator in resp.json()["indicators"]] == [
+    indicators = resp.json()["indicators"]
+    assert [indicator["key"] for indicator in indicators] == [
         "adx_family_14@1.0",
         "atr_14@1.0",
         "bollinger_bands_20_2@1.0",
@@ -259,6 +296,13 @@ def test_get_available_indicators_includes_simple_scalar_keys(store):
         "sma_osc_20@1.0",
         "sma_50@1.0",
     ]
+
+    # McClellan features are oscillator/summation values, not price overlays:
+    # they must render in their own sub-pane.
+    mcclellan = next(i for i in indicators if i["key"] == "mcclellan_oscillator")
+    assert mcclellan["pane"] == "separate"
+    assert mcclellan["overlay"] is False
+    assert mcclellan["name"] == "McClellan Oscillator"
 
     set_store(None)
 
@@ -311,6 +355,76 @@ def test_get_indicator_returns_grouped_bollinger_series(client):
         "Lower",
     ]
     assert all(len(series["data"]) == 3 for series in data["series"])
+
+
+def test_get_available_indicators_groups_mogalef():
+    """Mogalef Bands are grouped into a single price overlay indicator."""
+    s = DataStoreCore(":memory:")
+    conn = s.get_connection()
+
+    dates = pd.date_range("2026-01-05", periods=8, freq="B", tz="UTC")
+    df = pd.DataFrame(
+        {
+            "open": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "high": [2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            "low": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            "close": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "volume": [100.0] * 8,
+            "source": ["yfinance"] * 8,
+            "quality": ["normal"] * 8,
+            "is_gap": [False] * 8,
+            "latency_sec": [0.1] * 8,
+        },
+        index=dates,
+    )
+    df.index.name = "timestamp"
+    save_market_data(conn, "TEST", "1d", df)
+
+    for i in range(8):
+        save_features(conn, "TEST", "1d", dates[i].isoformat(), {
+            "mogalef_middle_3_7_2@1.0": {"value": 1.0 + i, "quality": "ready"},
+            "mogalef_upper_3_7_2@1.0": {"value": 2.0 + i, "quality": "ready"},
+            "mogalef_lower_3_7_2@1.0": {"value": 0.5 + i, "quality": "ready"},
+        })
+    conn.close()
+
+    set_store(s)
+    with TestClient(app) as client:
+        resp = client.get(
+            "/api/available-indicators",
+            params={"symbol": "TEST", "timeframe": "1d"},
+        )
+        assert resp.status_code == 200
+
+        indicators = resp.json()["indicators"]
+        mogalef = next(i for i in indicators if i["key"] == "mogalef_bands_3_7_2@1.0")
+        assert mogalef["name"] == "Mogalef Bands (3, 7, 2)"
+        assert mogalef["kind"] == "mogalef_bands"
+        assert mogalef["overlay"] is True
+        assert mogalef["pane"] == "overlay"
+        assert [series["label"] for series in mogalef["series"]] == [
+            "Middle",
+            "Upper",
+            "Lower",
+        ]
+        # The middle band is drawn as a dotted line.
+        assert mogalef["series"][0]["lineStyle"] == "dotted"
+
+        iresp = client.get(
+            "/api/indicator",
+            params={
+                "symbol": "TEST",
+                "timeframe": "1d",
+                "indicator": "mogalef_bands_3_7_2@1.0",
+            },
+        )
+        data = iresp.json()
+        assert data["name"] == "Mogalef Bands (3, 7, 2)"
+        assert data["kind"] == "mogalef_bands"
+        assert data["pane"] == "overlay"
+        assert len(data["series"]) == 3
+        assert all(len(series["data"]) == 8 for series in data["series"])
+    set_store(None)
 
 
 def test_get_indicator_returns_atr_scalar_in_separate_pane(client):
@@ -430,3 +544,171 @@ def test_get_features_no_symbol(client):
     )
     assert resp.status_code == 200
     assert resp.json()["data"] == []
+
+
+# ---------------------------------------------------------------------------
+# Paso 5 — Historial de trading, posiciones y métricas operativas
+# ---------------------------------------------------------------------------
+
+def test_trading_log_empty_by_default(client):
+    resp = client.get("/api/trading-log", params={"symbol": "TEST"})
+    assert resp.status_code == 200
+    assert resp.json() == {"symbol": "TEST", "events": []}
+
+
+def test_trading_log_append_and_read(client):
+    # Añade dos eventos
+    r1 = client.post(
+        "/api/trading-log",
+        json={
+            "symbol": "TEST",
+            "type": "signal",
+            "strategy": "buy_oversold",
+            "action": "BUY",
+            "timestamp": "2026-01-06T00:00:00+00:00",
+            "detail": {"funds_pct": 5.0},
+        },
+    )
+    assert r1.status_code == 200
+    assert r1.json()["count"] == 1
+
+    r2 = client.post(
+        "/api/trading-log",
+        json={
+            "symbol": "TEST",
+            "type": "execution",
+            "strategy": "buy_oversold",
+            "action": "BUY",
+            "timestamp": "2026-01-06T00:05:00+00:00",
+            "detail": {"price": 102.0, "qty": 10},
+        },
+    )
+    assert r2.json()["count"] == 2
+
+    resp = client.get("/api/trading-log", params={"symbol": "TEST"})
+    events = resp.json()["events"]
+    assert len(events) == 2
+    assert events[0]["type"] == "signal"
+    assert events[1]["type"] == "execution"
+    assert events[1]["detail"]["price"] == 102.0
+
+
+def test_trading_log_isolated_per_symbol(client):
+    client.post(
+        "/api/trading-log",
+        json={"symbol": "TEST", "type": "signal", "action": "BUY"},
+    )
+    # Otro símbolo no ve el evento de TEST
+    resp = client.get("/api/trading-log", params={"symbol": "OTHER"})
+    assert resp.json()["events"] == []
+
+
+def test_positions_empty_by_default(client):
+    resp = client.get("/api/positions", params={"symbol": "TEST"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["positions"] == []
+    assert data["open_positions"] == 0
+    # last_close del TEST (último cierre 1d) = 106.0
+    assert data["last_close"] == 106.0
+    assert data["total_pl"] == 0.0
+
+
+def test_positions_upsert_and_metrics(client):
+    # Posición long: entry 100, qty 10 → P/L = (106 - 100) * 10 = 60
+    r = client.post(
+        "/api/positions",
+        json={
+            "id": "p1",
+            "symbol": "TEST",
+            "side": "long",
+            "qty": 10.0,
+            "entry_price": 100.0,
+            "opened_at": "2026-01-05T00:00:00+00:00",
+            "strategy": "buy_oversold",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["count"] == 1
+
+    resp = client.get("/api/positions", params={"symbol": "TEST"})
+    data = resp.json()
+    assert data["open_positions"] == 1
+    assert data["total_pl"] == pytest.approx(60.0)
+    assert data["last_close"] == 106.0
+
+    # Upsert (mismo id) → sigue habiendo 1 posición, con qty actualizado
+    client.post(
+        "/api/positions",
+        json={
+            "id": "p1",
+            "symbol": "TEST",
+            "side": "long",
+            "qty": 20.0,
+            "entry_price": 100.0,
+        },
+    )
+    resp = client.get("/api/positions", params={"symbol": "TEST"})
+    data = resp.json()
+    assert data["open_positions"] == 1
+    assert data["positions"][0]["qty"] == 20.0
+    # P/L = (106 - 100) * 20 = 120
+    assert data["total_pl"] == pytest.approx(120.0)
+
+
+def test_positions_short_side(client):
+    # Posición short: entry 110, qty 5 → P/L = (110 - 106) * 5 = 20
+    client.post(
+        "/api/positions",
+        json={
+            "id": "s1",
+            "symbol": "TEST",
+            "side": "short",
+            "qty": 5.0,
+            "entry_price": 110.0,
+        },
+    )
+    resp = client.get("/api/positions", params={"symbol": "TEST"})
+    data = resp.json()
+    assert data["total_pl"] == pytest.approx(20.0)
+
+
+def test_positions_close(client):
+    client.post(
+        "/api/positions",
+        json={
+            "id": "p1",
+            "symbol": "TEST",
+            "side": "long",
+            "qty": 10.0,
+            "entry_price": 100.0,
+        },
+    )
+    r = client.delete(
+        "/api/positions/p1", params={"symbol": "TEST"}
+    )
+    assert r.status_code == 200
+    assert r.json()["count"] == 0
+
+    resp = client.get("/api/positions", params={"symbol": "TEST"})
+    assert resp.json()["open_positions"] == 0
+    assert resp.json()["total_pl"] == 0.0
+
+
+def test_positions_no_market_data(client):
+    # Símbolo sin datos de mercado → last_close None, P/L 0
+    client.post(
+        "/api/positions",
+        json={
+            "id": "x1",
+            "symbol": "GHOST",
+            "side": "long",
+            "qty": 1.0,
+            "entry_price": 50.0,
+        },
+    )
+    resp = client.get("/api/positions", params={"symbol": "GHOST"})
+    data = resp.json()
+    assert data["last_close"] is None
+    assert data["total_pl"] == 0.0
+    assert data["open_positions"] == 1

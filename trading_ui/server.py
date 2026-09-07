@@ -19,9 +19,13 @@ from fastapi import FastAPI, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from starlette.concurrency import run_in_threadpool
+
 from data_store.core import DataStoreCore
 from data_store.market_repo import load_market_data
+from data_store.state_repo import load_state, save_state
 from market_feed.timeframes import _ALLOWED as _VALID_TIMEFRAMES
+from trading_ui import ingest
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -73,6 +77,23 @@ _PLUS_DI_RE = re.compile(
 _MINUS_DI_RE = re.compile(
     r"^minus_di_(?P<period>\d+)@(?P<version>[A-Za-z0-9._-]+)$"
 )
+_MOGALEF_MIDDLE_RE = re.compile(
+    r"^mogalef_middle_(?P<n>\d+)_(?P<et>\d+)_(?P<coef>[0-9_]+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
+_MOGALEF_UPPER_RE = re.compile(
+    r"^mogalef_upper_(?P<n>\d+)_(?P<et>\d+)_(?P<coef>[0-9_]+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
+_MOGALEF_LOWER_RE = re.compile(
+    r"^mogalef_lower_(?P<n>\d+)_(?P<et>\d+)_(?P<coef>[0-9_]+)@(?P<version>[A-Za-z0-9._-]+)$"
+)
+
+# Scalar features that are NOT price overlays. They carry their own scale
+# (oscillator / summation values) and must render in a dedicated sub-pane
+# instead of being drawn on top of the price chart.
+_SEPARATE_SCALAR_FEATURES: dict[str, str] = {
+    "mcclellan_oscillator": "McClellan Oscillator",
+    "mcclellan_summation": "McClellan Summation",
+}
 
 # ---------------------------------------------------------------------------
 # Application
@@ -95,6 +116,54 @@ def set_store(store: DataStoreCore) -> None:
     """Override the DataStoreCore instance (used by tests)."""
     global _store
     _store = store
+
+
+async def _ensure_data(symbol: str, timeframe: str) -> dict[str, Any]:
+    """Asegura datos frescos para ``(symbol, timeframe)``.
+
+    Si el par aún no está en ``data_store`` (o está desactualizado), lo
+    descarga del proveedor, calcula las features y lo persiste — en un hilo
+    para no bloquear el event loop.  Devuelve un dict de estado de la ingesta
+    para que los endpoints puedan informar al cliente si el ticker no existe
+    (``no_data``) o si la descarga falló (``error``).
+    """
+    store = _get_store()
+    try:
+        return await run_in_threadpool(
+            ingest.ensure_symbol_data, store, symbol, timeframe
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Fallo de descarga → servimos lo cacheado (o vacío) e informamos.
+        return {"action": "error", "error": str(exc)}
+
+
+def _ingest_status(result: dict[str, Any] | None, symbol: str, has_data: bool) -> dict[str, Any]:
+    """Traduce el resultado de la ingesta a un ``status``/``message`` de API.
+
+    - Si hay velas → ``ok``.
+    - Si no hay velas y la ingesta reportó ``no_data`` → ``no_data``.
+    - Si la ingesta falló (``error``) → ``error`` (red / símbolo no válido).
+    - Si no hay velas pero la ingesta no lo aclaró → ``empty``.
+    """
+    action = (result or {}).get("action")
+
+    if has_data:
+        return {"status": "ok", "message": None}
+
+    if action == "no_data":
+        return {
+            "status": "no_data",
+            "message": f"No data for {symbol}. The ticker may not exist or the provider has no data for the requested range.",
+        }
+    if action == "error":
+        return {
+            "status": "error",
+            "message": f"Could not load {symbol}: {result.get('error')}",
+        }
+    return {
+        "status": "empty",
+        "message": f"No cached data for {symbol} and it could not be downloaded.",
+    }
 
 
 # Mount static files only if the frontend directory exists (won't exist
@@ -139,6 +208,7 @@ def _build_indicator_catalog(feature_cols: list[str]) -> list[dict[str, Any]]:
     bands: dict[tuple[str, str, str], dict[str, str]] = {}
     macd_parts: dict[tuple[str, str, str, str, str], dict[str, str]] = {}
     adx_parts: dict[tuple[str, str], dict[str, str]] = {}
+    mogalef_bands: dict[tuple[str, str, str, str], dict[str, str]] = {}
 
     for col in feature_cols:
         middle_match = _BOLLINGER_MIDDLE_RE.fullmatch(col)
@@ -263,6 +333,58 @@ def _build_indicator_catalog(feature_cols: list[str]) -> list[dict[str, Any]]:
             adx_parts.setdefault(key, {})["minus_di"] = col
             continue
 
+        mogalef_middle_match = _MOGALEF_MIDDLE_RE.fullmatch(col)
+        if mogalef_middle_match:
+            key = (
+                mogalef_middle_match.group("n"),
+                mogalef_middle_match.group("et"),
+                mogalef_middle_match.group("coef"),
+                mogalef_middle_match.group("version"),
+            )
+            mogalef_bands.setdefault(key, {})["middle"] = col
+            continue
+
+        mogalef_upper_match = _MOGALEF_UPPER_RE.fullmatch(col)
+        if mogalef_upper_match:
+            key = (
+                mogalef_upper_match.group("n"),
+                mogalef_upper_match.group("et"),
+                mogalef_upper_match.group("coef"),
+                mogalef_upper_match.group("version"),
+            )
+            mogalef_bands.setdefault(key, {})["upper"] = col
+            continue
+
+        mogalef_lower_match = _MOGALEF_LOWER_RE.fullmatch(col)
+        if mogalef_lower_match:
+            key = (
+                mogalef_lower_match.group("n"),
+                mogalef_lower_match.group("et"),
+                mogalef_lower_match.group("coef"),
+                mogalef_lower_match.group("version"),
+            )
+            mogalef_bands.setdefault(key, {})["lower"] = col
+            continue
+
+        if col in _SEPARATE_SCALAR_FEATURES:
+            consumed.add(col)
+            indicators.append({
+                "key": col,
+                "name": _SEPARATE_SCALAR_FEATURES[col],
+                "kind": "scalar",
+                "overlay": False,
+                "pane": "separate",
+                "series": [
+                    {
+                        "key": col,
+                        "label": _SEPARATE_SCALAR_FEATURES[col],
+                        "color": "#94e2d5",
+                        "lineWidth": 2,
+                        "seriesType": "line",
+                    }
+                ],
+            })
+            continue
     for (period, deviation, version), parts in sorted(bands.items()):
         middle = middle_by_period.get((period, version))
         upper = parts.get("upper")
@@ -297,6 +419,48 @@ def _build_indicator_catalog(feature_cols: list[str]) -> list[dict[str, Any]]:
                     "label": "Lower",
                     "color": "#89b4fa",
                     "lineWidth": 2,
+                    "seriesType": "line",
+                },
+            ],
+        })
+
+    for (n, et, coef, version), parts in sorted(mogalef_bands.items()):
+        middle = parts.get("middle")
+        upper = parts.get("upper")
+        lower = parts.get("lower")
+        if not (middle and upper and lower):
+            continue
+
+        consumed.update({middle, upper, lower})
+        indicators.append({
+            "key": f"mogalef_bands_{n}_{et}_{coef}@{version}",
+            "name": (
+                f"Mogalef Bands ({n}, {et}, {_format_display_param(coef)})"
+            ),
+            "kind": "mogalef_bands",
+            "overlay": True,
+            "pane": "overlay",
+            "series": [
+                {
+                    "key": middle,
+                    "label": "Middle",
+                    "color": "#f9e2af",
+                    "lineWidth": 1,
+                    "lineStyle": "dotted",
+                    "seriesType": "line",
+                },
+                {
+                    "key": upper,
+                    "label": "Upper",
+                    "color": "#f38ba8",
+                    "lineWidth": 1,
+                    "seriesType": "line",
+                },
+                {
+                    "key": lower,
+                    "label": "Lower",
+                    "color": "#89b4fa",
+                    "lineWidth": 1,
                     "seriesType": "line",
                 },
             ],
@@ -449,6 +613,7 @@ async def get_ohlcv(
     timeframe: str = Query(..., description="Timeframe (e.g. 1d)"),
 ):
     """Load OHLCV + volume from data_store, formatted for LWC."""
+    ingest_result = await _ensure_data(symbol, timeframe)
     conn = _get_store().get_connection()
     try:
         df = load_market_data(conn, symbol, timeframe)
@@ -456,7 +621,13 @@ async def get_ohlcv(
         conn.close()
 
     if df.empty:
-        return {"symbol": symbol, "timeframe": timeframe, "candles": [], "volume": []}
+        return {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "candles": [],
+            "volume": [],
+            **_ingest_status(ingest_result, symbol, has_data=False),
+        }
 
     candles = []
     volume = []
@@ -482,6 +653,7 @@ async def get_ohlcv(
         "timeframe": timeframe,
         "candles": candles,
         "volume": volume,
+        **_ingest_status(ingest_result, symbol, has_data=True),
     }
 
 
@@ -491,6 +663,7 @@ async def get_available_features(
     timeframe: str = Query(..., description="Timeframe"),
 ):
     """List feature keys available for a symbol/timeframe pair."""
+    await _ensure_data(symbol, timeframe)
     conn = _get_store().get_connection()
     try:
         df = load_market_data(conn, symbol, timeframe)
@@ -510,6 +683,7 @@ async def get_available_indicators(
     timeframe: str = Query(..., description="Timeframe"),
 ):
     """List renderable indicators for a symbol/timeframe pair."""
+    await _ensure_data(symbol, timeframe)
     conn = _get_store().get_connection()
     try:
         df = load_market_data(conn, symbol, timeframe)
@@ -529,6 +703,7 @@ async def get_features(
     feature: str = Query(..., description="Feature key (e.g. sma_50@1.0)"),
 ):
     """Load a specific feature series, omitting NaN values."""
+    await _ensure_data(symbol, timeframe)
     conn = _get_store().get_connection()
     try:
         df = load_market_data(conn, symbol, timeframe)
@@ -564,6 +739,7 @@ async def get_indicator(
     indicator: str = Query(..., description="Indicator key"),
 ):
     """Load a grouped indicator definition with one or more renderable series."""
+    await _ensure_data(symbol, timeframe)
     conn = _get_store().get_connection()
     try:
         df = load_market_data(conn, symbol, timeframe)
@@ -604,6 +780,7 @@ async def get_indicator(
             "color": item["color"],
             "negativeColor": item.get("negativeColor"),
             "lineWidth": item["lineWidth"],
+            "lineStyle": item.get("lineStyle"),
             "seriesType": item.get("seriesType", "line"),
             "valueFormat": item.get("valueFormat"),
             "data": data,
@@ -619,3 +796,175 @@ async def get_indicator(
         "pane": descriptor.get("pane", "overlay"),
         "series": payload_series,
     }
+
+
+# ---------------------------------------------------------------------------
+# Paso 5 — Historial de trading, posiciones y métricas operativas
+# ---------------------------------------------------------------------------
+#
+# El estado se persiste en el KV store de DataStore (``system_state``) bajo
+# claves por símbolo:
+#   - ``trading_log_{symbol}``  → lista de eventos (señales / ejecuciones).
+#   - ``positions_{symbol}``    → lista de posiciones abiertas.
+#
+# Las métricas operativas (TOTAL P/L, Open Positions) se derivan de las
+# posiciones abiertas y del último cierre disponible en ``market_data``.
+
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+def _log_key(symbol: str) -> str:
+    return f"trading_log_{symbol}"
+
+
+def _positions_key(symbol: str) -> str:
+    return f"positions_{symbol}"
+
+
+def _latest_close(symbol: str) -> float | None:
+    """Último cierre disponible para el símbolo (cualquier timeframe)."""
+    conn = _get_store().get_connection()
+    try:
+        timeframes = [
+            r["timeframe"]
+            for r in conn.execute(
+                "SELECT DISTINCT timeframe FROM market_data WHERE symbol = ?",
+                (symbol,),
+            ).fetchall()
+        ]
+        best: float | None = None
+        best_ts = None
+        for tf in timeframes:
+            df = load_market_data(conn, symbol, tf)
+            if df.empty:
+                continue
+            ts = df.index[-1]
+            close = _safe_float(df["close"].iloc[-1])
+            if close is None:
+                continue
+            if best_ts is None or ts > best_ts:
+                best_ts = ts
+                best = close
+        return best
+    finally:
+        conn.close()
+
+
+class LogEvent(BaseModel):
+    """Evento del log de trading (señal o ejecución)."""
+
+    symbol: str
+    type: str = Field(description="signal | execution")
+    strategy: str | None = None
+    action: str | None = None
+    timestamp: str | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class Position(BaseModel):
+    """Posición abierta."""
+
+    id: str
+    symbol: str
+    side: str = Field(description="long | short")
+    qty: float
+    entry_price: float
+    opened_at: str | None = None
+    strategy: str | None = None
+
+
+def _compute_total_pl(positions: list[dict[str, Any]], last_close: float | None) -> float:
+    """P/L no realizado de las posiciones abiertas contra el último cierre."""
+    if last_close is None:
+        return 0.0
+    total = 0.0
+    for pos in positions:
+        qty = float(pos.get("qty", 0.0))
+        entry = float(pos.get("entry_price", 0.0))
+        side = pos.get("side", "long")
+        if side == "short":
+            total += (entry - last_close) * qty
+        else:
+            total += (last_close - entry) * qty
+    return total
+
+
+@app.get("/api/trading-log")
+async def get_trading_log(symbol: str = Query(..., description="Ticker symbol")):
+    """Devuelve el log de trading (señales y ejecuciones) de un símbolo."""
+    conn = _get_store().get_connection()
+    try:
+        events = load_state(conn, _log_key(symbol)) or []
+    finally:
+        conn.close()
+    return {"symbol": symbol, "events": events}
+
+
+@app.post("/api/trading-log")
+async def append_trading_log(event: LogEvent):
+    """Añade un evento al log de trading de un símbolo."""
+    conn = _get_store().get_connection()
+    try:
+        events = load_state(conn, _log_key(event.symbol)) or []
+        events.append(event.model_dump())
+        save_state(conn, _log_key(event.symbol), events)
+    finally:
+        conn.close()
+    return {"symbol": event.symbol, "count": len(events)}
+
+
+@app.get("/api/positions")
+async def get_positions(symbol: str = Query(..., description="Ticker symbol")):
+    """Devuelve las posiciones abiertas y las métricas operativas."""
+    conn = _get_store().get_connection()
+    try:
+        positions = load_state(conn, _positions_key(symbol)) or []
+    finally:
+        conn.close()
+
+    last_close = _latest_close(symbol)
+    total_pl = _compute_total_pl(positions, last_close)
+
+    return {
+        "symbol": symbol,
+        "positions": positions,
+        "open_positions": len(positions),
+        "total_pl": total_pl,
+        "last_close": last_close,
+    }
+
+
+@app.post("/api/positions")
+async def upsert_position(position: Position):
+    """Crea o actualiza una posición abierta (por ``id``)."""
+    conn = _get_store().get_connection()
+    try:
+        positions = load_state(conn, _positions_key(position.symbol)) or []
+        payload = position.model_dump()
+        existing_ids = {p.get("id") for p in positions}
+        if position.id in existing_ids:
+            positions = [
+                payload if p.get("id") == position.id else p for p in positions
+            ]
+        else:
+            positions.append(payload)
+        save_state(conn, _positions_key(position.symbol), positions)
+    finally:
+        conn.close()
+    return {"symbol": position.symbol, "count": len(positions)}
+
+
+@app.delete("/api/positions/{position_id}")
+async def close_position(
+    position_id: str,
+    symbol: str = Query(..., description="Ticker symbol"),
+):
+    """Cierra (elimina) una posición abierta por ``id``."""
+    conn = _get_store().get_connection()
+    try:
+        positions = load_state(conn, _positions_key(symbol)) or []
+        remaining = [p for p in positions if p.get("id") != position_id]
+        save_state(conn, _positions_key(symbol), remaining)
+    finally:
+        conn.close()
+    return {"symbol": symbol, "count": len(remaining)}

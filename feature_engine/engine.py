@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from feature_engine.composition.dag import FeatureExecutionDAG
+from feature_engine.observability import FeatureObservability
 from feature_engine.registry import FeatureRegistry
 
 
@@ -27,6 +28,11 @@ class FeatureEngine:
         requested_features: tuple[str, ...] | list[str],
         *,
         include_dependencies: bool = False,
+        observability: FeatureObservability | None = None,
     ) -> pd.DataFrame:
         dag = self.build_dag(requested_features)
-        return dag.execute(market_data, include_dependencies=include_dependencies)
+        return dag.execute(
+            market_data,
+            include_dependencies=include_dependencies,
+            observability=observability,
+        )

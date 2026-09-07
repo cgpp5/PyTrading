@@ -1,33 +1,60 @@
 <!DOCTYPE html>
-<html lang="en">
+<html class="dark" lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TradingUI</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <title>OBSIDIAN_OBSERVATORY | Wall Monitor</title>
+    
+    <!-- React & Babel for client-side JSX transpilation -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Tailwind & Lightweight Charts -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
     <script src="https://unpkg.com/lightweight-charts@5.0/dist/lightweight-charts.standalone.production.js"></script>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+
+    <!-- Tailwind Config -->
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "chart-green": "#4DFF54",
+              "chart-red": "#BD1A27",
+              "chart-blue": "#0044FF",
+              "chart-teal": "#009D88",
+              "chart-sage": "#99C69B"
+            },
+            fontFamily: {
+              "headline": ["Space Grotesk", "sans-serif"],
+              "body": ["Inter", "sans-serif"],
+              "mono": ["JetBrains Mono", "monospace"]
+            }
+          }
+        }
+      }
+    </script>
+
+    <style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+            font-size: 11px;
+        }
+        .text-terminal { font-size: 9px; font-weight: 500; }
+        .text-compact-xs { font-size: 8px; }
+        body { margin: 0; overflow: hidden; background-color: #000; color: #e5e2e1; }
+        select option { background-color: #0F0F0F; color: #fff; }
+    </style>
 </head>
-<body>
-    <!-- Toolbar -->
-    <div id="toolbar">
-        <label for="symbol">Symbol</label>
-        <select id="symbol"></select>
-
-        <label for="timeframe">Timeframe</label>
-        <select id="timeframe"></select>
-
-        <label for="feature">Indicator</label>
-        <select id="feature">
-            <option value="">(ninguno)</option>
-        </select>
-
-        <button id="load-btn">Cargar</button>
-        <span id="status"></span>
-    </div>
-
-    <!-- Chart -->
-    <div id="chart-container"></div>
-
-    <script type="module" src="/static/app.js"></script>
+<body class="font-body selection:bg-blue-600 selection:text-white">
+    <div id="root"></div>
+    <script type="text/babel" src="/static/app.jsx?v=23"></script>
 </body>
 </html>

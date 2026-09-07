@@ -32,3 +32,16 @@ class InsufficientLookback(FeatureEngineError):
 
 class ComputationError(FeatureEngineError):
     """Raised when a feature computation fails due to invalid or missing input data."""
+
+
+class AmbiguousSnapshotError(FeatureEngineError):
+    """Raised when a snapshot cannot be resolved to exactly one bar.
+
+    A snapshot is *ambiguous* when the requested timestamp does not match a
+    bar in the feature index (e.g. a naive timestamp against a UTC index, or a
+    timestamp that falls between bars). The consumer must request an exact bar.
+    """
+
+
+class InvalidWindowError(FeatureEngineError):
+    """Raised when a temporal window is inconsistent (e.g. start after end)."""

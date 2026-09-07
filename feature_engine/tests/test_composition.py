@@ -23,6 +23,11 @@ from feature_engine.composition.bollinger import (
     BollingerUpperBand,
 )
 from feature_engine.composition.macd import MACDHistogram, MACDLine, MACDSignal
+from feature_engine.composition.mogalef import (
+    MogalefLowerBand,
+    MogalefMiddleBand,
+    MogalefUpperBand,
+)
 from feature_engine.composition.sma_osc import SMAOscillator
 
 
@@ -155,6 +160,107 @@ class TestBollingerBands:
         ]:
             result = feat.compute(df)
             assert (result.index == df.index).all()
+
+
+class TestMogalef:
+    """Tests for the Mogalef Bands (Eric Lefort) overlay features."""
+
+    def _mogalef_df(self, vals: list[float]) -> pd.DataFrame:
+        idx = pd.date_range(
+            start=datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc),
+            periods=len(vals),
+            freq="1h",
+        )
+        # open=close, high/low offset by +/-1 so the weighted Mogalef price
+        # (H + L + O + C + C)/5 reduces exactly to close.
+        return pd.DataFrame(
+            {
+                "open": vals,
+                "high": [v + 1.0 for v in vals],
+                "low": [v - 1.0 for v in vals],
+                "close": vals,
+                "volume": [100.0] * len(vals),
+            },
+            index=idx,
+        )
+
+    def test_spec_contract(self):
+        feature = MogalefMiddleBand(n=3, et=7, coef=2.0, timeframe="1d")
+        assert feature.spec.name == "mogalef_middle_3_7_2"
+        assert feature.spec.category == FeatureCategory.TECHNICAL
+        assert feature.spec.depends_on == ()
+        assert feature.spec.lookback_required == 9
+        assert feature.spec.warmup_policy == WarmupPolicy.FIXED_LOOKBACK
+
+    def test_band_siblings_have_distinct_names(self):
+        lower = MogalefLowerBand(n=3, et=7, coef=2.0, timeframe="1d")
+        upper = MogalefUpperBand(n=3, et=7, coef=2.0, timeframe="1d")
+        assert lower.spec.name == "mogalef_lower_3_7_2"
+        assert upper.spec.name == "mogalef_upper_3_7_2"
+        assert lower.spec.lookback_required == 9
+        assert upper.spec.lookback_required == 9
+
+    def test_values_match_flat_breakout_construction(self):
+        # Weighted prices 1..8 give a perfectly linear regression line, so the
+        # band width (std dev of the regression line) is constant and the
+        # flat/breakout scan drives the plateaued envelope.
+        df = self._mogalef_df([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+
+        middle = MogalefMiddleBand(n=3, et=3, coef=2.0, timeframe="1h").compute(df)
+        upper = MogalefUpperBand(n=3, et=3, coef=2.0, timeframe="1h").compute(df)
+        lower = MogalefLowerBand(n=3, et=3, coef=2.0, timeframe="1h").compute(df)
+
+        # etyp = population std dev of the regression window [3,4,5] = sqrt(2/3).
+        half = 2.0 * (2.0 / 3.0) ** 0.5
+        expected = {
+            "middle": [np.nan, np.nan, np.nan, np.nan, 6.0, 6.0, 8.0, 8.0],
+            "upper": [
+                np.nan, np.nan, np.nan, np.nan,
+                6.0 + half, 6.0 + half, 8.0 + half, 8.0 + half,
+            ],
+            "lower": [
+                np.nan, np.nan, np.nan, np.nan,
+                6.0 - half, 6.0 - half, 8.0 - half, 8.0 - half,
+            ],
+        }
+
+        for result, exp in [
+            (middle, expected["middle"]),
+            (upper, expected["upper"]),
+            (lower, expected["lower"]),
+        ]:
+            assert result.index.equals(df.index)
+            for got, want in zip(result.to_numpy(), exp):
+                if pd.isna(want):
+                    assert pd.isna(got)
+                else:
+                    assert got == pytest.approx(want)
+
+    def test_final_bar_always_anchors_a_fresh_band(self):
+        df = self._mogalef_df([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0])
+        upper = MogalefUpperBand(n=3, et=3, coef=2.0, timeframe="1h").compute(df)
+
+        reg_last = 8.0
+        std_last = (2.0 / 3.0) ** 0.5
+        assert upper.iloc[-1] == pytest.approx(reg_last + 2.0 * std_last)
+
+    def test_gap_row_produces_nan(self):
+        df = self._mogalef_df([100.0, float("nan"), 105.0, 110.0, 115.0])
+        result = MogalefMiddleBand(n=3, et=3, coef=2.0, timeframe="1h").compute(df)
+        assert pd.isna(result.iloc[1])
+
+    def test_missing_columns_raise(self):
+        df = pd.DataFrame({"open": [1.0, 2.0], "close": [1.0, 2.0]})
+        with pytest.raises(ComputationError, match="high"):
+            MogalefMiddleBand(n=3, et=3, coef=2.0).compute(df)
+
+    def test_invalid_parameters_raise(self):
+        with pytest.raises(ValueError, match="n must be >= 2"):
+            MogalefMiddleBand(n=1, et=3, coef=2.0)
+        with pytest.raises(ValueError, match="et must be >= 2"):
+            MogalefUpperBand(n=3, et=1, coef=2.0)
+        with pytest.raises(ValueError, match="coef must be > 0"):
+            MogalefLowerBand(n=3, et=7, coef=0.0)
 
 
 class TestMACD:

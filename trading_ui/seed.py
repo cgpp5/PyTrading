@@ -1,5 +1,8 @@
 """trading_ui.seed — Pobla data_store con datos reales para validación visual.
 
+Delega en ``trading_ui.ingest`` (fuente de verdad única para la descarga y el
+cálculo de features).
+
 Uso:
     python -m trading_ui.seed
     python -m trading_ui.seed --symbols AAPL SPY MSFT --days 365
@@ -8,36 +11,10 @@ Uso:
 from __future__ import annotations
 
 import argparse
-import sys
 from datetime import datetime, timedelta, timezone
 
 from data_store.core import DataStoreCore
-from data_store.market_repo import (
-    save_features,
-    save_market_data,
-    save_request_meta,
-)
-from market_feed.calendar import MarketCalendarResolver
-from market_feed.market_feed import MarketFeed, ProviderTier
-from market_feed.observability import InMemoryObservability
-from market_feed.providers.yfinance import YFinanceProvider
-from feature_engine.composition.adx import (
-    AverageDirectionalIndex,
-    MinusDirectionalIndex,
-    PlusDirectionalIndex,
-)
-from feature_engine.composition.atr import AverageTrueRange
-from feature_engine.composition.bollinger import (
-    BollingerBandWidth,
-    BollingerLowerBand,
-    BollingerMiddleBand,
-    BollingerUpperBand,
-)
-from feature_engine.composition.macd import MACDHistogram, MACDLine, MACDSignal
-from feature_engine.composition.sma_osc import SMAOscillator
-from feature_engine.errors import ComputationError
-from feature_engine.primitives.external import McClellanOscillator, McClellanSummation
-from feature_engine.primitives.rolling import RollingMean
+from trading_ui import ingest
 
 
 DB_PATH = "trading_data.sqlite"
@@ -46,112 +23,20 @@ DEFAULT_DAYS = 365
 TIMEFRAME = "1d"
 
 
-def _feature_storage_key(feature) -> str:
-    storage_key = getattr(feature, "storage_key", None)
-    if isinstance(storage_key, str):
-        return storage_key
-    spec = feature.spec
-    return f"{spec.name}@{spec.version}"
-
-
-def _build_market_feed() -> MarketFeed:
-    """Construct a MarketFeed with yfinance as the sole provider."""
-    obs = InMemoryObservability()
-    cal_map = {s: "NYSE" for s in DEFAULT_SYMBOLS + ["MSFT", "GOOG", "AMZN", "META", "TSLA"]}
-    cal = MarketCalendarResolver(cal_map, obs)
-
-    tiers = [
-        ProviderTier(provider=YFinanceProvider(), quality="degraded"),
-    ]
-    return MarketFeed(tiers=tiers, calendar_resolver=cal, observability=obs)
-
-
 def _seed_symbol(
-    feed: MarketFeed,
     store: DataStoreCore,
     symbol: str,
     start: datetime,
     end: datetime,
 ) -> dict:
-    """Download, compute features, and persist data for one symbol."""
-    # --- 1. Descargar OHLCV ---
-    print(f"  [{symbol}] Descargando OHLCV ({TIMEFRAME})...", end=" ", flush=True)
-    md = feed.get_ohlcv(symbol, TIMEFRAME, start, end)
-
-    if md.df.empty:
-        print("SIN DATOS")
-        return {"symbol": symbol, "rows": 0, "features": 0}
-
-    print(f"{len(md.df)} velas")
-
-    # --- 2. Persistir OHLCV ---
-    conn = store.get_connection()
-    rows = save_market_data(conn, symbol, TIMEFRAME, md.df)
-    print(f"  [{symbol}] Guardadas {rows} filas en data_store")
-
-    # --- 3. Persistir metadata ---
-    meta_dict = {
-        "provider_used": md.meta.provider_used,
-        "fallback_used": md.meta.fallback_used,
-        "start": md.meta.start.isoformat(),
-        "end": md.meta.end.isoformat(),
-        "coverage_ratio": md.meta.coverage_ratio,
-        "gap_count": md.meta.gap_count,
-        "quality": md.meta.quality,
-        "notes": md.meta.notes,
-    }
-    save_request_meta(conn, symbol, TIMEFRAME, meta_dict)
-
-    # --- 4. Calcular y persistir features ---
-    calculators = [
-        RollingMean(window=50, timeframe=TIMEFRAME),
-        BollingerMiddleBand(period=20, timeframe=TIMEFRAME),
-        BollingerUpperBand(period=20, timeframe=TIMEFRAME),
-        BollingerLowerBand(period=20, timeframe=TIMEFRAME),
-        BollingerBandWidth(period=20, timeframe=TIMEFRAME),
-        AverageTrueRange(period=14, timeframe=TIMEFRAME),
-        PlusDirectionalIndex(period=14, timeframe=TIMEFRAME),
-        MinusDirectionalIndex(period=14, timeframe=TIMEFRAME),
-        AverageDirectionalIndex(period=14, timeframe=TIMEFRAME),
-        MACDLine(timeframe=TIMEFRAME),
-        MACDSignal(timeframe=TIMEFRAME),
-        MACDHistogram(timeframe=TIMEFRAME),
-        SMAOscillator(period=20, timeframe=TIMEFRAME),
-        McClellanOscillator(timeframe=TIMEFRAME),
-        McClellanSummation(timeframe=TIMEFRAME),
-    ]
-
-    features_by_ts: dict[str, dict[str, dict[str, float | None | str]]] = {}
-    imported_keys: list[str] = []
-
-    for feature in calculators:
-        try:
-            series = feature.compute(md.df)
-        except ComputationError as exc:
-            print(f"  [{symbol}] Omitida {feature.spec.name}: {exc}")
-            continue
-
-        feature_key = _feature_storage_key(feature)
-        imported_keys.append(feature_key)
-
-        for ts, value in series.items():
-            if value is None or (hasattr(value, "__class__") and value != value):
-                quality = "warmup" if "@" in feature_key else "missing"
-                entry = {"value": None, "quality": quality}
-            else:
-                entry = {"value": float(value), "quality": "ready"}
-
-            features_by_ts.setdefault(ts.isoformat(), {})[feature_key] = entry
-
-    features_saved = 0
-    for ts_iso, feat_dict in features_by_ts.items():
-        save_features(conn, symbol, TIMEFRAME, ts_iso, feat_dict)
-        features_saved += len(feat_dict)
-
-    print(f"  [{symbol}] Inyectadas {features_saved} features ({', '.join(imported_keys)})")
-    conn.close()
-
-    return {"symbol": symbol, "rows": rows, "features": features_saved}
+    """Descarga, calcula features y persiste datos para un símbolo."""
+    print(f"  [{symbol}] Descargando OHLCV ({TIMEFRAME})...", flush=True)
+    res = ingest.fetch_and_store_symbol(store, symbol, TIMEFRAME, start, end)
+    print(
+        f"  [{symbol}] {res['rows']} filas, "
+        f"{res['features']} features ({res['action']})"
+    )
+    return {"symbol": symbol, "rows": res["rows"], "features": res["features"]}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -185,16 +70,10 @@ def main(argv: list[str] | None = None) -> None:
     print()
 
     store = DataStoreCore(args.db)
-    feed = _build_market_feed()
-
-    # Asegurar que el calendar_resolver conoce todos los symbols
-    for s in args.symbols:
-        if s not in feed._cal._symbol_calendar_map:
-            feed._cal._symbol_calendar_map[s] = "NYSE"
 
     results = []
     for symbol in args.symbols:
-        result = _seed_symbol(feed, store, symbol, start, end)
+        result = _seed_symbol(store, symbol, start, end)
         results.append(result)
 
     print()
