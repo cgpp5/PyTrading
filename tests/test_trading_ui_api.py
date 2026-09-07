@@ -151,6 +151,41 @@ def test_get_ohlcv_nonexistent_symbol(client):
     assert data["message"] is not None
 
 
+def test_get_ohlcv_skips_gap_rows(store):
+    """Las filas de hueco (NaN en OHLC) no deben producir velas ni error 500."""
+    conn = store.get_connection()
+    # Añade una fila de hueco (NaN OHLC) tras las 5 velas existentes.
+    dates = pd.date_range("2026-01-05", periods=5, freq="B", tz="UTC")
+    gap_ts = dates[-1] + pd.Timedelta(days=1)
+    gap_df = pd.DataFrame(
+        {
+            "open": [None], "high": [None], "low": [None], "close": [None],
+            "volume": [None],
+            "source": ["yfinance"], "quality": ["degraded"],
+            "is_gap": [True], "latency_sec": [0.1],
+        },
+        index=pd.DatetimeIndex([gap_ts], name="timestamp"),
+    )
+    gap_df.index.name = "timestamp"
+    save_market_data(conn, "TEST", "1d", gap_df)
+    conn.close()
+
+    set_store(store)
+    try:
+        with TestClient(app) as client:
+            resp = client.get(
+                "/api/ohlcv", params={"symbol": "TEST", "timeframe": "1d"}
+            )
+        assert resp.status_code == 200
+        data = resp.json()
+        # La fila de hueco se omite: siguen 5 velas, todas numéricas.
+        assert len(data["candles"]) == 5
+        assert all(isinstance(c["open"], (int, float)) for c in data["candles"])
+        assert data["status"] == "ok"
+    finally:
+        set_store(None)
+
+
 def test_ingest_status_mapping():
     """El helper traduce la acción de la ingesta a status/message de API."""
     from trading_ui.server import _ingest_status

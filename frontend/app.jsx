@@ -1,4 +1,12 @@
 const { useState, useEffect, useRef, useCallback, useId } = React;
+
+// Cuánta historia se carga en cada "scroll a la izquierda" (segundos).
+const HISTORY_CHUNK_SEC = {
+  '1d': 730 * 86400,    // ~2 años de velas diarias por tramo
+  '4h': 90 * 86400,
+  '1h': 90 * 86400,
+  '15m': 45 * 86400,
+};
 const { createChart, CandlestickSeries, HistogramSeries, LineSeries, LineStyle } = LightweightCharts;
 
 const THEMES = {
@@ -154,7 +162,7 @@ const SymbolInput = ({ value, onChange, symbols = [], className = "" }) => {
             {/* Desplegable de tickers cacheados (posición fija: escapa del clipping) */}
             {open && dropPos && (
                 <div
-                    className="fixed z-[200] bg-[#0F0F0F] border border-white/20 rounded shadow-xl overflow-y-auto"
+                    className="fixed z-[200] bg-[#0F0F0F] border border-white/20 shadow-xl overflow-y-auto"
                     style={{ top: dropPos.top, left: dropPos.left, width: dropPos.width, maxHeight: 208 }}
                 >
                     {filtered.length === 0 ? (
@@ -301,7 +309,7 @@ function clearIndicatorRefs(chart, seriesRef, paneRef) {
 }
 
 // ---------------------------------------------------------------------------
-// PriceChart — gráfico reutilizable (velas + volumen + indicadores)
+// PriceChart — gráfico reutilizable (velas + indicadores)
 // Compartido por el Wall Monitor (ChartCard) y la Detail Screen.
 //
 // `syncId`: si se proporciona, este gráfico se sincroniza (zoom/pan) con todos
@@ -314,12 +322,16 @@ const PriceChart = ({ symbol, timeframe, indicators = [], onPrice, syncId }) => 
     const chartContainerRef = useRef(null);
     const chartRef = useRef(null);
     const candleSeriesRef = useRef(null);
-    const volumeSeriesRef = useRef(null);
     const indicatorSeriesRefs = useRef({});
     const indicatorPaneRefs = useRef({});
     // Clave de símbolo|timeframe para saber cuándo reiniciar todo (evita
     // paneles huérfanos al cambiar de instrumento).
     const lastKeyRef = useRef('');
+    // Scroll-left: carga incremental de historia más antigua al hacer pan.
+    const earliestRef = useRef(0);        // unix sec del bar más antiguo cargado
+    const candleCountRef = useRef(0);     // nº total de velas cargadas
+    const canLoadMoreRef = useRef(true);  // false al alcanzar el inicio del proveedor
+    const loadingOlderRef = useRef(false);
 
     const [status, setStatus] = useState("Loading...");
     // Mensaje cuando el símbolo no tiene datos (ticker inexistente / sin datos).
@@ -384,7 +396,6 @@ const PriceChart = ({ symbol, timeframe, indicators = [], onPrice, syncId }) => 
 
         // Clear existing OHLCV series
         if (candleSeriesRef.current) chartRef.current.removeSeries(candleSeriesRef.current);
-        if (volumeSeriesRef.current) chartRef.current.removeSeries(volumeSeriesRef.current);
 
         candleSeriesRef.current = chartRef.current.addSeries(CandlestickSeries, {
             upColor: '#4DFF54', 
@@ -395,27 +406,17 @@ const PriceChart = ({ symbol, timeframe, indicators = [], onPrice, syncId }) => 
             wickDownColor: '#BD1A27',
         });
 
-        // El volumen se superpone en el panel principal (no se crea un panel
-        // separado): así no aparece un divisor innecesario entre precio y
-        // volumen. Se dibuja en la franja inferior mediante su propia escala
-        // de precios y `scaleMargins`.
-        volumeSeriesRef.current = chartRef.current.addSeries(HistogramSeries, {
-            color: '#1e293b',
-            priceFormat: { type: 'volume' },
-            priceScaleId: 'volume',
-        });
-
-        volumeSeriesRef.current.priceScale().applyOptions({
-            scaleMargins: { top: 0.8, bottom: 0 }
-        });
-
         setStatus("Fetching data...");
         setEmptyMsg(null);
         fetchJSON(`/api/ohlcv?symbol=${symbol}&timeframe=${timeframe}`)
             .then(data => {
                 candleSeriesRef.current.setData(data.candles);
-                volumeSeriesRef.current.setData(data.volume);
-                if (data.candles.length > 0) chartRef.current.timeScale().fitContent();
+                if (data.candles.length > 0) {
+                    chartRef.current.timeScale().fitContent();
+                    earliestRef.current = data.candles[0].time;
+                }
+                candleCountRef.current = data.candles.length;
+                canLoadMoreRef.current = true;
 
                 const ok = data.status === "ok" && data.candles.length > 0;
                 setEmptyMsg(ok ? null : (data.message || `No data available for ${symbol}`));
@@ -431,6 +432,60 @@ const PriceChart = ({ symbol, timeframe, indicators = [], onPrice, syncId }) => 
             .catch(err => setStatus(`Error: ${err.message}`));
 
     }, [symbol, timeframe]);
+
+    // 5a. Scroll-left: al llegar al borde izquierdo (con zoom), pedir un tramo
+    // de historia más antiguo, anteponerlo y mantener la vista actual.
+    const loadOlder = useCallback(async () => {
+        const chart = chartRef.current;
+        if (!chart || !symbol || !timeframe) return;
+        if (loadingOlderRef.current || !canLoadMoreRef.current) return;
+        const earliest = earliestRef.current;
+        if (!earliest) return;
+
+        loadingOlderRef.current = true;
+        try {
+            const chunkSec = (HISTORY_CHUNK_SEC[timeframe] || 90 * 86400);
+            const newStart = earliest - chunkSec;
+            const startIso = new Date(newStart * 1000).toISOString();
+            const data = await fetchJSON(
+                `/api/ohlcv?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&start=${startIso}`
+            );
+            const candles = data.candles || [];
+            if (candles.length === 0) {
+                canLoadMoreRef.current = false; // el proveedor no tiene más atrás
+                return;
+            }
+            // Conservar la vista: recordar el rango visible antes de anteponer.
+            const vis = chart.timeScale().getVisibleRange();
+            if (candleSeriesRef.current) candleSeriesRef.current.setData(candles);
+            if (vis) chart.timeScale().setVisibleRange(vis);
+            candleCountRef.current = candles.length;
+            earliestRef.current = candles[0].time;
+            if (candles.length < 10) canLoadMoreRef.current = false;
+        } catch (e) {
+            // Error transitorio: se reintentará en el siguiente scroll.
+        } finally {
+            loadingOlderRef.current = false;
+        }
+    }, [symbol, timeframe]);
+
+    // Suscripción: detectar cuándo el usuario está pegado al borde izquierdo.
+    useEffect(() => {
+        const chart = chartRef.current;
+        if (!chart || !symbol || !timeframe) return;
+        const handler = (range) => {
+            if (!range) return;
+            const total = candleCountRef.current;
+            if (!total || total < 10) return;
+            const width = range.to - range.from;
+            const atLeftEdge = range.from <= 2;
+            // Requiere zoom (no fit-all): sólo si la vista no abarca todo.
+            const zoomed = width < total * 0.9;
+            if (atLeftEdge && zoomed) loadOlder();
+        };
+        chart.timeScale().subscribeVisibleLogicalRangeChange(handler);
+        return () => chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler);
+    }, [loadOlder]);
 
     // 5. Load and synchronize Indicators
     //
@@ -585,8 +640,8 @@ const ChartCard = ({ window, updateWindow, onClose, addWindowFrom, onMaximize })
     return (
         <div className="bg-[#0F0F0F] border-[0.5px] border-white/30 flex flex-col overflow-hidden relative shadow-xl h-full w-full min-h-0 min-w-0">
             {/* Cabecera del Gráfico */}
-            <div className="flex justify-between items-center px-2 py-1 bg-black/40 border-b-[0.5px] border-white/10 z-10">
-                <div className="flex items-center space-x-2 overflow-hidden">
+            <div className="flex justify-between items-center px-1 py-0.5 bg-black/40 border-b-[0.5px] border-white/10 z-10">
+                <div className="flex items-center space-x-1 overflow-hidden">
 
                     {/* Símbolo (combobox: escribe cualquier ticker o elige de los cacheados) */}
                     <SymbolInput
@@ -639,12 +694,12 @@ const ChartCard = ({ window, updateWindow, onClose, addWindowFrom, onMaximize })
 
                 </div>
 
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-1">
                     {/* Precio en vivo: alineado a la derecha, Mono, coloreado dinámicamente */}
                     <span className={`font-mono text-terminal h-6 flex items-center ${priceColor}`}>
                         {priceStr} ({changeStr})
                     </span>
-                    <div className="flex items-center space-x-1">
+                    <div className="flex items-center space-x-0">
                         <button className="material-symbols-outlined flex items-center justify-center h-6 w-6 text-slate-400 hover:text-white transition-colors" onClick={() => onMaximize && onMaximize(window)} title="Open Detail Screen">fullscreen</button>
                         <button className="material-symbols-outlined flex items-center justify-center h-6 w-6 text-slate-400 hover:text-white transition-colors" onClick={() => addWindowFrom(window)} title="Clone Window">add_box</button>
                         <button className="material-symbols-outlined flex items-center justify-center h-6 w-6 text-slate-400 hover:text-white transition-colors" onClick={onClose} title="Close Window">close</button>
@@ -729,8 +784,8 @@ const DetailScreen = ({ initialWindow, onBack }) => {
     return (
         <div className="bg-[#000000] text-[#e5e2e1] font-body h-screen w-screen overflow-hidden flex flex-col">
             {/* Barra superior */}
-            <div className="flex items-center justify-between px-3 py-2 bg-black/60 border-b-[0.5px] border-white/10 z-20">
-                <div className="flex items-center space-x-3">
+            <div className="flex items-center justify-between px-2 py-1 bg-black/60 border-b-[0.5px] border-white/10 z-20">
+                <div className="flex items-center space-x-2">
                     <button className="material-symbols-outlined flex items-center justify-center h-6 w-6 text-slate-400 hover:text-white transition-colors" onClick={onBack} title="Back to Wall Monitor">arrow_back</button>
                     <span className="font-headline font-bold tracking-widest text-xs uppercase text-white">Instrument Monitor</span>
 
@@ -776,7 +831,7 @@ const DetailScreen = ({ initialWindow, onBack }) => {
 
                 </div>
 
-                <div className="flex items-center space-x-3">
+                <div className="flex items-center space-x-2">
                     {/* Precio en vivo: alineado a la derecha, Mono, coloreado dinámicamente */}
                     <span className={`font-mono text-terminal h-6 flex items-center ${priceColor}`}>
                         {lastPrice.toFixed(2)} ({(priceChange >= 0 ? "+" : "") + priceChange.toFixed(2)}%)
@@ -809,13 +864,13 @@ const DetailScreen = ({ initialWindow, onBack }) => {
                     <div className="p-3 border-b-[0.5px] border-white/10">
                         <div className="text-[8px] uppercase tracking-widest text-slate-500 mb-2">Operative Metrics</div>
                         <div className="grid grid-cols-2 gap-2">
-                            <div className="bg-white/5 rounded p-2">
+                            <div className="bg-white/5 p-2">
                                 <div className="text-[8px] uppercase text-slate-500">Total P/L</div>
                                 <div className={`font-mono text-sm font-bold ${plColor}`}>
                                     {totalPl >= 0 ? "+" : ""}{totalPl.toFixed(2)}
                                 </div>
                             </div>
-                            <div className="bg-white/5 rounded p-2">
+                            <div className="bg-white/5 p-2">
                                 <div className="text-[8px] uppercase text-slate-500">Open Positions</div>
                                 <div className="font-mono text-sm font-bold text-white">{openPositions}</div>
                             </div>
@@ -833,7 +888,7 @@ const DetailScreen = ({ initialWindow, onBack }) => {
                         ) : (
                             <div className="space-y-1">
                                 {positions.map(p => (
-                                    <div key={p.id} className="flex items-center justify-between bg-white/5 rounded px-2 py-1 text-[9px]">
+                                    <div key={p.id} className="flex items-center justify-between bg-white/5 px-2 py-1 text-[9px]">
                                         <span className="uppercase font-bold text-white">{p.side}</span>
                                         <span className="font-mono text-slate-400">{p.qty} @ {p.entry_price}</span>
                                         <button
@@ -864,7 +919,7 @@ const DetailScreen = ({ initialWindow, onBack }) => {
                                         ? (isBuy ? "text-[#4DFF54]" : isSell ? "text-[#BD1A27]" : "text-slate-300")
                                         : "text-slate-400";
                                     return (
-                                        <div key={i} className="bg-white/5 rounded px-2 py-1 text-[9px]">
+                                        <div key={i} className="bg-white/5 px-2 py-1 text-[9px]">
                                             <div className="flex items-center justify-between">
                                                 <span className={`font-bold uppercase ${color}`}>
                                                     {ev.type === "execution" ? "EXEC" : "SIGNAL"} · {ev.action || "—"}
@@ -935,18 +990,6 @@ const App = () => {
 
     return (
         <div className="bg-[#000000] text-[#e5e2e1] font-body selection:bg-blue-600 selection:text-white h-screen w-screen overflow-hidden relative flex flex-col">
-            
-            {/* Global Toolbar / Add Window Button */}
-            {count < 6 && (
-                <button 
-                    onClick={addWindow} 
-                    className="absolute z-50 bottom-4 right-4 material-symbols-outlined text-white hover:text-gray-300 transition-colors drop-shadow-lg text-3xl"
-                    title="Add Chart Window"
-                >
-                    add
-                </button>
-            )}
-
             {/* Grid Principal */}
             <main 
                 className="gap-1 p-1 bg-[#000000] h-full w-full min-h-0" 
@@ -993,7 +1036,7 @@ const App = () => {
                     <div className="col-span-full row-span-full flex flex-col items-center justify-center text-slate-600">
                         <span className="material-symbols-outlined text-4xl mb-2">monitoring</span>
                         <p className="font-headline tracking-widest text-xs uppercase">No active windows</p>
-                        <button onClick={addWindow} className="mt-4 px-4 py-2 bg-white/5 hover:bg-white/10 rounded border border-white/10 text-xs font-bold uppercase">
+                        <button onClick={addWindow} className="mt-4 px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-bold uppercase">
                             Add Window
                         </button>
                     </div>

@@ -70,14 +70,29 @@ from feature_engine.primitives.volume import VolumeZScore
 
 DEFAULT_CALENDAR = "NYSE"
 
-# Historia a descargar por timeframe.  yfinance limita el histórico
-# intradía (~60 días); sólo ``1d`` permite ventanas largas.
+# Historia por defecto y máxima a descargar por timeframe.
+#
+#   - Diario (``1d``): yfinance permite décadas de histórico.
+#   - ``4h``/``1h``: se derivan/descarga de ``1h`` (límite ~2 años).
+#   - ``15m``: yfinance limita ~60 días para datos de 1 minuto/15m.
 _DAYS_BY_TIMEFRAME: dict[str, int] = {
     "1d": 365,
     "4h": 60,
     "1h": 60,
     "15m": 60,
 }
+_MAX_DAYS_BY_TIMEFRAME: dict[str, int] = {
+    "1d": 3650,   # hasta 10 años de velas diarias
+    "4h": 730,
+    "1h": 730,
+    "15m": 60,
+}
+
+# Si una descarga no devuelve datos (ticker no válido / índice con prefijo
+# como ^SPX), no reintentamos contra yfinance hasta pasado este tiempo, para
+# no martillear el proveedor ante cada lectura.
+_EMPTY_COOLDOWN_SEC = 30.0
+_last_empty_fetch: dict[tuple[str, str], float] = {}
 
 # El acceso a yfinance/escritura a sqlite se serializa con un lock de módulo
 # para evitar descargas duplicadas simultáneas y escrituras concurrentes.
@@ -208,32 +223,26 @@ def _register_calendar(symbol: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Frescura
+# Cobertura y frescura
 # ---------------------------------------------------------------------------
 
-def _data_is_fresh(store: DataStoreCore, symbol: str, timeframe: str) -> bool:
-    """True si hay datos y el último bar no está desactualizado."""
+def _as_utc(ts) -> datetime:
+    """Normaliza un timestamp de pandas a UTC con tzinfo."""
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
+def _cached_extent(store: DataStoreCore, symbol: str, timeframe: str):
+    """Devuelve ``(oldest, latest)`` de los datos cacheados o ``None``."""
     conn = store.get_connection()
     try:
         df = load_market_data(conn, symbol, timeframe)
         if df.empty:
-            return False
-        latest = df.index.max()
+            return None
+        return df.index.min(), df.index.max()
     finally:
         conn.close()
-
-    if latest.tzinfo is None:
-        latest = latest.tz_localize("UTC")
-    else:
-        latest = latest.tz_convert("UTC")
-
-    now = datetime.now(timezone.utc)
-    age = now - latest
-
-    # Margen para no re-descargar cada vez que se navega: diario permite
-    # fin de semana; intradía se refresca antes.
-    max_age = timedelta(days=4) if timeframe == "1d" else timedelta(days=2)
-    return age <= max_age
 
 
 # ---------------------------------------------------------------------------
@@ -300,27 +309,128 @@ def ensure_symbol_data(
     symbol: str,
     timeframe: str,
     *,
+    days: int | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Devuelve datos frescos para ``(symbol, timeframe)``, descargando si falta.
+    """Asegura ``days`` días de historia para ``(symbol, timeframe)``.
 
-    Si ya hay datos frescos devuelve ``{"action": "cached"}`` sin tocar la
-    red.  Si faltan (o están obsoletos), descarga y persiste.  Es el punto de
-    entrada que el servidor llama ante cada lectura.
+    - ``days=None`` → usa la historia por defecto del timeframe.
+    - Descarga si no hay datos, si están obsoletos, o si la cobertura
+      cacheada es menor que la pedida (para ampliar el histórico).
+    - Los tickers que no devuelven datos se marcan en ``_last_empty_fetch``
+      para no martillear al proveedor ante cada lectura.
+    """
+    symbol = (symbol or "").strip().upper()
+    timeframe = (timeframe or "").strip().lower()
+
+    default_days = _DAYS_BY_TIMEFRAME.get(timeframe, 365)
+    max_days = _MAX_DAYS_BY_TIMEFRAME.get(timeframe, default_days)
+    if days is None:
+        days = default_days
+    days = max(1, min(int(days), max_days))
+
+    with _lock:
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(days=days)
+        key = (symbol, timeframe)
+
+        # Cooldown anti-martilleo: si el último intento de este ticker no dio
+        # datos y fue hace poco, servimos lo que haya (normalmente vacío).
+        last_empty = _last_empty_fetch.get(key)
+        if not force and last_empty is not None and (
+            now - last_empty
+        ).total_seconds() < _EMPTY_COOLDOWN_SEC:
+            return {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "action": "cooldown",
+                "rows": 0,
+                "features": 0,
+            }
+
+        extent = None if force else _cached_extent(store, symbol, timeframe)
+
+        if extent is not None:
+            oldest, latest = _as_utc(extent[0]), _as_utc(extent[1])
+            # Cobertura suficiente => tenemos al menos `days` de historia.
+            coverage_ok = oldest <= window_start
+            # Margen de frescura: diario tolera fin de semana; intradía menos.
+            max_age = timedelta(days=4) if timeframe == "1d" else timedelta(days=2)
+            fresh = (now - latest) <= max_age
+            if coverage_ok and fresh:
+                return {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "action": "cached",
+                }
+
+        result = fetch_and_store_symbol(
+            store, symbol, timeframe, window_start, now
+        )
+        if result.get("action") == "no_data":
+            _last_empty_fetch[key] = now
+        else:
+            _last_empty_fetch.pop(key, None)
+        return result
+
+
+def ensure_history_back_to(
+    store: DataStoreCore,
+    symbol: str,
+    timeframe: str,
+    start: datetime,
+) -> dict[str, Any]:
+    """Asegura que el histórico cacheado llegue al menos hasta ``start``.
+
+    Si ya hay datos más antiguos que ``start``, no hace nada.  En caso
+    contrario descarga únicamente el tramo más antiguo que falta (desde
+    ``start`` hasta el dato más antiguo ya cacheado), calcula y persiste sus
+    features, y deja intacto el resto.  Es la pieza que permite cargar más
+    historia "hacia la izquierda" según el usuario hace scroll/pan.
     """
     symbol = (symbol or "").strip().upper()
     timeframe = (timeframe or "").strip().lower()
 
     with _lock:
-        if not force and _data_is_fresh(store, symbol, timeframe):
+        now = datetime.now(timezone.utc)
+        key = (symbol, timeframe)
+
+        # Cooldown anti-martilleo (símbolos que no devuelven datos).
+        last_empty = _last_empty_fetch.get(key)
+        if last_empty is not None and (
+            now - last_empty
+        ).total_seconds() < _EMPTY_COOLDOWN_SEC:
             return {
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "action": "cached",
+                "action": "cooldown",
+                "rows": 0,
+                "features": 0,
             }
 
-        end = datetime.now(timezone.utc)
-        days = _DAYS_BY_TIMEFRAME.get(timeframe, _DAYS_BY_TIMEFRAME["1d"])
-        start = end - timedelta(days=days)
+        extent = _cached_extent(store, symbol, timeframe)
+        target = start.astimezone(timezone.utc)
 
-        return fetch_and_store_symbol(store, symbol, timeframe, start, end)
+        if extent is None:
+            # Nada cacheado: descarga [start, now].
+            result = fetch_and_store_symbol(
+                store, symbol, timeframe, target, now
+            )
+        else:
+            oldest = _as_utc(extent[0])
+            if oldest <= target:
+                return {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "action": "cached",
+                }
+            # Falta el tramo [target, oldest): descargar sólo ese trozo.
+            result = fetch_and_store_symbol(
+                store, symbol, timeframe, target, oldest
+            )
+
+        if result.get("action") == "no_data":
+            _last_empty_fetch[key] = now
+        else:
+            _last_empty_fetch.pop(key, None)
+        return result

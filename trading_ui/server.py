@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -118,19 +119,21 @@ def set_store(store: DataStoreCore) -> None:
     _store = store
 
 
-async def _ensure_data(symbol: str, timeframe: str) -> dict[str, Any]:
+async def _ensure_data(
+    symbol: str, timeframe: str, days: int | None = None
+) -> dict[str, Any]:
     """Asegura datos frescos para ``(symbol, timeframe)``.
 
-    Si el par aún no está en ``data_store`` (o está desactualizado), lo
-    descarga del proveedor, calcula las features y lo persiste — en un hilo
-    para no bloquear el event loop.  Devuelve un dict de estado de la ingesta
-    para que los endpoints puedan informar al cliente si el ticker no existe
-    (``no_data``) o si la descarga falló (``error``).
+    Si el par aún no está en ``data_store`` (o su cobertura es menor que
+    ``days`` días), lo descarga del proveedor, calcula las features y lo
+    persiste — en un hilo para no bloquear el event loop.  Devuelve un dict
+    de estado de la ingesta para que los endpoints puedan informar al cliente
+    si el ticker no existe (``no_data``) o si la descarga falló (``error``).
     """
     store = _get_store()
     try:
         return await run_in_threadpool(
-            ingest.ensure_symbol_data, store, symbol, timeframe
+            ingest.ensure_symbol_data, store, symbol, timeframe, days=days
         )
     except Exception as exc:  # noqa: BLE001
         # Fallo de descarga → servimos lo cacheado (o vacío) e informamos.
@@ -195,6 +198,14 @@ def _safe_float(val: Any) -> float | None:
 
 def _feature_columns(df) -> list[str]:
     return sorted(c for c in df.columns if c not in _BASE_COLUMNS)
+
+
+def _load_window(conn, symbol: str, timeframe: str, days: int | None = None):
+    """Carga OHLCV acotado a los últimos ``days`` días (si se indica)."""
+    start = None
+    if days is not None:
+        start = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return load_market_data(conn, symbol, timeframe, start=start)
 
 
 def _format_display_param(value: str) -> str:
@@ -611,12 +622,47 @@ async def get_timeframes():
 async def get_ohlcv(
     symbol: str = Query(..., description="Ticker symbol"),
     timeframe: str = Query(..., description="Timeframe (e.g. 1d)"),
+    days: int | None = Query(None, description="History lookback in days"),
+    start: str | None = Query(
+        None, description="ISO date: fetch/serve history back to this day"
+    ),
 ):
-    """Load OHLCV + volume from data_store, formatted for LWC."""
-    ingest_result = await _ensure_data(symbol, timeframe)
-    conn = _get_store().get_connection()
+    """Load OHLCV + volume from data_store, formatted for LWC.
+
+    ``days`` pide los últimos N días.  ``start`` (fecha ISO) pide historia
+    hasta esa fecha hacia atrás — si hace falta se descarga — y devuelve
+    todas las velas desde ``start`` (útil para cargar más histórico al
+    hacer pan/scroll a la izquierda).
+    """
+    start_dt: datetime | None = None
+    if start is not None:
+        try:
+            start_dt = datetime.fromisoformat(start)
+        except ValueError:
+            start_dt = None
+        if start_dt is not None and start_dt.tzinfo is None:
+            start_dt = start_dt.replace(tzinfo=timezone.utc)
+
+    store = _get_store()
+    if start_dt is not None:
+        try:
+            ingest_result = await run_in_threadpool(
+                ingest.ensure_history_back_to,
+                store, symbol, timeframe, start_dt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            ingest_result = {"action": "error", "error": str(exc)}
+    else:
+        ingest_result = await _ensure_data(symbol, timeframe, days)
+
+    conn = store.get_connection()
     try:
-        df = load_market_data(conn, symbol, timeframe)
+        if start_dt is not None:
+            df = load_market_data(
+                conn, symbol, timeframe, start=start_dt.isoformat()
+            )
+        else:
+            df = _load_window(conn, symbol, timeframe, days)
     finally:
         conn.close()
 
@@ -636,17 +682,27 @@ async def get_ohlcv(
         row = df.loc[ts]
         t = _ts_to_unix(ts)
 
+        open_v = _safe_float(row.get("open"))
+        high_v = _safe_float(row.get("high"))
+        low_v = _safe_float(row.get("low"))
+        close_v = _safe_float(row.get("close"))
+        vol_v = _safe_float(row.get("volume"))
+
+        # Las filas de hueco (NaN en OHLC) son marcadores de gap, no velas
+        # reales: se omiten para que LWC no reciba NaN (que JSON no serializa
+        # y provocaba un error 500 al cambiar a 15m/1h).
+        if open_v is None or high_v is None or low_v is None or close_v is None:
+            continue
+
         candles.append({
             "time": t,
-            "open": float(row["open"]),
-            "high": float(row["high"]),
-            "low": float(row["low"]),
-            "close": float(row["close"]),
+            "open": open_v,
+            "high": high_v,
+            "low": low_v,
+            "close": close_v,
         })
-        volume.append({
-            "time": t,
-            "value": float(row["volume"]),
-        })
+        if vol_v is not None:
+            volume.append({"time": t, "value": vol_v})
 
     return {
         "symbol": symbol,
@@ -661,12 +717,13 @@ async def get_ohlcv(
 async def get_available_features(
     symbol: str = Query(..., description="Ticker symbol"),
     timeframe: str = Query(..., description="Timeframe"),
+    days: int | None = Query(None, description="History lookback in days"),
 ):
     """List feature keys available for a symbol/timeframe pair."""
-    await _ensure_data(symbol, timeframe)
+    await _ensure_data(symbol, timeframe, days)
     conn = _get_store().get_connection()
     try:
-        df = load_market_data(conn, symbol, timeframe)
+        df = _load_window(conn, symbol, timeframe, days)
     finally:
         conn.close()
 
@@ -681,12 +738,13 @@ async def get_available_features(
 async def get_available_indicators(
     symbol: str = Query(..., description="Ticker symbol"),
     timeframe: str = Query(..., description="Timeframe"),
+    days: int | None = Query(None, description="History lookback in days"),
 ):
     """List renderable indicators for a symbol/timeframe pair."""
-    await _ensure_data(symbol, timeframe)
+    await _ensure_data(symbol, timeframe, days)
     conn = _get_store().get_connection()
     try:
-        df = load_market_data(conn, symbol, timeframe)
+        df = _load_window(conn, symbol, timeframe, days)
     finally:
         conn.close()
 
@@ -701,12 +759,13 @@ async def get_features(
     symbol: str = Query(..., description="Ticker symbol"),
     timeframe: str = Query(..., description="Timeframe"),
     feature: str = Query(..., description="Feature key (e.g. sma_50@1.0)"),
+    days: int | None = Query(None, description="History lookback in days"),
 ):
     """Load a specific feature series, omitting NaN values."""
-    await _ensure_data(symbol, timeframe)
+    await _ensure_data(symbol, timeframe, days)
     conn = _get_store().get_connection()
     try:
-        df = load_market_data(conn, symbol, timeframe)
+        df = _load_window(conn, symbol, timeframe, days)
     finally:
         conn.close()
 
@@ -737,12 +796,13 @@ async def get_indicator(
     symbol: str = Query(..., description="Ticker symbol"),
     timeframe: str = Query(..., description="Timeframe"),
     indicator: str = Query(..., description="Indicator key"),
+    days: int | None = Query(None, description="History lookback in days"),
 ):
     """Load a grouped indicator definition with one or more renderable series."""
-    await _ensure_data(symbol, timeframe)
+    await _ensure_data(symbol, timeframe, days)
     conn = _get_store().get_connection()
     try:
-        df = load_market_data(conn, symbol, timeframe)
+        df = _load_window(conn, symbol, timeframe, days)
     finally:
         conn.close()
 
